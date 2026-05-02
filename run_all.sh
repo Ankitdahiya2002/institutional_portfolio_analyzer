@@ -22,9 +22,10 @@ pkill -f "uvicorn api_gateway" 2>/dev/null || true
 pkill -f "streamlit run app_v2" 2>/dev/null || true
 sleep 1
 
-# ── Install missing deps silently ────────────────────────────────
+# ── Install dependencies ──────────────────────────────────────────
 echo "📦 Checking dependencies..."
-pip install -q fastapi uvicorn[standard] python-multipart slowapi 2>/dev/null || true
+$PYTHON -m pip install -q -r requirements.txt 2>/dev/null || true
+$PYTHON -m pip install -q slowapi 2>/dev/null || true
 
 # ── Start FastAPI backend ─────────────────────────────────────────
 echo "🚀 Starting FastAPI backend on :8000 ..."

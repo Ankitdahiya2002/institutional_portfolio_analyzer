@@ -337,45 +337,6 @@ if not uploaded:
         </script>
         """, height=0)
 
-    # ── Live Market Ticker (cached) ─────────────────────────────────
-    @st.cache_data(ttl=60)
-    def _fetch_indices():
-        res = {}
-        try:
-            import requests as _r
-            syms = {"^NSEI":"NIFTY 50", "^BSESN":"SENSEX", "^NSEBANK":"BANK NIFTY", "^CNXIT":"NIFTY IT", "^CNXFMCG":"NIFTY FMCG", "GC=F":"GOLD (USD)"}
-            for sym, name in syms.items():
-                try:
-                    r = _r.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
-                               params={"interval":"1d","range":"5d"},
-                               headers={"User-Agent":"Mozilla/5.0"}, timeout=3)
-                    if r.status_code == 200:
-                        meta = r.json().get("chart",{}).get("result",[{}])[0].get("meta",{})
-                        cur  = float(meta.get("regularMarketPrice",0) or 0)
-                        prev = float(meta.get("chartPreviousClose", cur) or cur)
-                        chg  = cur - prev
-                        pct = (chg/prev)*100 if prev else 0
-                        res[sym] = {"cur": cur, "pct": pct}
-                except:
-                    pass
-            return res
-        except: return {}
-    market_data = _fetch_indices()
-    tickers = [
-        ("NIFTY 50", market_data.get("^NSEI", {}).get("cur", 24500), market_data.get("^NSEI", {}).get("pct", 0.42)),
-        ("SENSEX",   market_data.get("^BSESN", {}).get("cur", 80500), market_data.get("^BSESN", {}).get("pct", 0.38)),
-        ("BANK NIFTY", market_data.get("^NSEBANK", {}).get("cur", 52430), market_data.get("^NSEBANK", {}).get("pct", 0.61)),
-        ("NIFTY IT", market_data.get("^CNXIT", {}).get("cur", 38120), market_data.get("^CNXIT", {}).get("pct", -0.24)),
-        ("NIFTY FMCG", market_data.get("^CNXFMCG", {}).get("cur", 56800), market_data.get("^CNXFMCG", {}).get("pct", 0.18)),
-        ("GOLD (USD)", market_data.get("GC=F", {}).get("cur", 2450), market_data.get("GC=F", {}).get("pct", 0.55)),
-    ]
-    def _t(name, val, pct):
-        cls = "tick-up" if pct >= 0 else "tick-dn"
-        sym = "▲" if pct >= 0 else "▼"
-        return f'<span class="tick-item"><span style="color:#6b7280;font-weight:800;">{name}</span><span class="tick-val" style="color:#fff;font-weight:900;">{val:,.0f}</span><span class="{cls}" style="font-weight:900;">{sym}{abs(pct):.2f}%</span></span>'
-    items = "".join(_t(n,v,p) for n,v,p in tickers)
-    st.markdown(f'<div class="ticker-wrap"><div class="ticker-inner">{items*4}</div></div>', unsafe_allow_html=True)
-
     # ── HERO ──────────────────────────────────────────────────────
     c_hero, c_cta = st.columns([1.6, 1])
     with c_hero:

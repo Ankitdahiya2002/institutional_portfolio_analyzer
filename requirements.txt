@@ -12,8 +12,6 @@ yfinance>=0.2.36
 xlrd>=2.0.1
 fastapi>=0.111.0
 uvicorn>=0.30.0
-celery>=5.4.0
-redis>=5.0.0
 python-multipart>=0.0.9
 websocket-client
 finnhub-python
