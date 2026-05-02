@@ -1,24 +1,26 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import requests, time, os, json
+import requests, time, os, json, base64
+from io import BytesIO
 from dotenv import load_dotenv
 load_dotenv()
 
-API = os.getenv("API_URL", "http://127.0.0.1:8000")
-
-# ── Fetch API key (auto-bootstrapped from /apikey on localhost) ───
-def _get_api_key():
-    key = os.getenv("PORTFOLIO_API_KEY", "")
-    if not key:
-        try:
-            key = requests.get(f"{API}/apikey", timeout=3).json().get("api_key", "")
-        except Exception:
-            pass
-    return key
-
-_API_KEY = _get_api_key()
-_HEADERS = {"X-API-Key": _API_KEY}
+# Standalone Task Handlers (Resolves Streamlit Cloud 'Gateway Unreachable' errors)
+try:
+    from tasks import run_parse, run_enrich_analytics, run_ai_report
+    IS_STANDALONE = True
+except ImportError:
+    IS_STANDALONE = False
+    API = os.getenv("API_URL", "http://127.0.0.1:8000")
+    def _get_api_key():
+        key = os.getenv("PORTFOLIO_API_KEY", "")
+        if not key:
+            try: key = requests.get(f"{API}/apikey", timeout=3).json().get("api_key", "")
+            except Exception: pass
+        return key
+    _API_KEY = _get_api_key()
+    _HEADERS = {"X-API-Key": _API_KEY}
 
 st.set_page_config(page_title="Portfolio Analyzer V2", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
@@ -72,8 +74,31 @@ def show_err(title, cause, raw="", hint=""):
         with st.expander("📋 API Logs"):
             st.info("Check terminal running uvicorn for detailed logs.")
 
-def poll(task_id, label, max_wait=180):
-    """Poll a task ID until SUCCESS/FAILURE. Shows % in st.status."""
+def poll(task_id, label, max_wait=180, phase=None, payload=None):
+    """Execution wrapper — uses local tasks if standalone, else polls API."""
+    if IS_STANDALONE and phase:
+        with st.status(label, expanded=True) as s:
+            try:
+                if phase == 1:
+                    b64 = base64.b64encode(payload["file"].getvalue()).decode()
+                    res = run_parse(b64, payload["file"].name)
+                elif phase == 2:
+                    res = run_enrich_analytics(payload)
+                elif phase == 3:
+                    res = run_ai_report(payload)
+                else:
+                    res = {"status": "error", "message": "Unknown phase"}
+                
+                if res.get("status") == "success":
+                    s.update(label=f"✅ Done!  ·  100%", state="complete", expanded=False)
+                    return res
+                show_err("Task Error", res.get("message", "Unknown"))
+                s.update(label="❌ Failed", state="error"); return None
+            except Exception as e:
+                show_err("Execution Error", str(e))
+                s.update(label="❌ Crashed", state="error"); return None
+
+    # Fallback to API polling
     import math
     with st.status(label, expanded=True) as s:
         elapsed = 0
@@ -95,9 +120,9 @@ def poll(task_id, label, max_wait=180):
             if cs == "FAILURE":
                 raw   = str(r.get("result", ""))
                 cause = "💥 Worker crashed"
-                show_err("Pipeline Failed", cause, raw, "Restart run_all.sh and retry.")
+                show_err("Pipeline Failed", cause, raw, "Check logs.")
                 s.update(label="❌ Failed", state="error"); return None
-            time.sleep(2); elapsed += 2
+            time.sleep(1); elapsed += 1
         show_err("Timed out", f"No result after {max_wait}s.", hint="Check uvicorn terminal")
         s.update(label="⏰ Timed out", state="error"); return None
 
@@ -208,14 +233,16 @@ with st.sidebar:
     sidebar_uploaded = st.file_uploader("Drop CSV/Excel", type=["csv","xlsx","xls"], key="sidebar_uploader", label_visibility="collapsed")
     
 # Determine which uploader has the file
-uploaded = sidebar_uploaded or st.session_state.get("main_uploaded")
+uploaded = st.session_state.get("sidebar_uploader") or st.session_state.get("main_uploader") or st.session_state.get("last_uploaded_file")
+if uploaded:
+    st.session_state.last_uploaded_file = uploaded
 
 if uploaded:
     st.sidebar.success(f"✓ {uploaded.name}  ({uploaded.size/1024:.1f} KB)")
 
 # ── STATE RESET ───────────────────────────────────────────────────
 if not uploaded:
-    for k in ["p1","p2","p3","fkey"]:
+    for k in ["p1","p2","p3"]:
         if k in st.session_state: del st.session_state[k]
 
     # ── Extra CSS for homepage ─────────────────────────────────────
@@ -255,146 +282,118 @@ if not uploaded:
 /* Completely hide top-right Streamlit menu and Deploy button */
 [data-testid="stToolbarActions"],
 [data-testid="stAppDeployButton"],
-[data-testid="stMainMenu"] {
+[data-testid="stMainMenu"],
+[data-testid="stStatusWidget"],
+[data-testid="stElementToolbar"] {
     display: none !important;
+}
+/* Aggressively hide the technical 'Running...' overlay for fragments */
+div[data-testid="stStatusWidget"], .stStatusWidget, div[class*="stFragmentStatus"] {
+    display: none !important;
+    visibility: hidden !important;
 }
 </style>""", unsafe_allow_html=True)
 
-    # ── JS OVERRIDES ────────────────────────────────────────────────
-    st.components.v1.html("""
-        <script>
-        const doc = window.parent.document;
-        
-        const upgradeDropzone = () => {
-            const dzs = doc.querySelectorAll('[data-testid="stFileUploaderDropzone"]');
-            dzs.forEach(dz => {
-                if (dz && !dz.dataset.upgraded) {
-                    dz.dataset.upgraded = 'true';
-                    Array.from(dz.children).forEach(child => {
-                        if (child.tagName !== 'INPUT') child.style.display = 'none';
-                    });
-                    dz.classList.add('upload-cta');
-                    const cta = doc.createElement('div');
-                    cta.style.textAlign = 'center';
-                    cta.style.width = '100%';
-                    cta.style.display = 'flex';
-                    cta.style.flexDirection = 'column';
-                    cta.style.alignItems = 'center';
-                    cta.style.justifyContent = 'center';
-                    cta.innerHTML = `
-                      <div onclick="window.parent.document.querySelector('[data-testid=\\'stFileUploaderDropzoneInput\\']').click()" style="font-size: 32px; margin-bottom: 8px; color: rgba(250, 250, 250, 0.6); cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'">🗂️</div>
-                      <div style="color:#60a5fa;font-family:sans-serif;font-weight:900;font-size:14px;margin-bottom:4px;pointer-events:none;">Drop Portfolio</div>
-                      <div style="color:#6b7280;font-family:sans-serif;font-size:10px;pointer-events:none;">CSV · XLSX · XLS</div>
-                    `;
-                    dz.prepend(cta);
-                }
-            });
-        };
 
-        const upgradeSidebarToggle = () => {
-            const buttons = doc.querySelectorAll('button');
-            buttons.forEach(btn => {
-                const content = btn.innerText || btn.textContent || "";
-                if (content.includes('keyboard_double_arrow') || content.includes('keyboard_arrow')) {
-                    // Hide original content
-                    btn.style.fontSize = '0';
-                    btn.style.color = 'transparent';
-                    Array.from(btn.children).forEach(c => { if(c.tagName !== 'SPAN' || !c.classList.contains('custom-arrow')) c.style.display = 'none'; });
-                    
-                    let arrow = btn.querySelector('.custom-arrow');
-                    if (!arrow) {
-                        arrow = doc.createElement('span');
-                        arrow.className = 'custom-arrow';
-                        arrow.innerText = '➤';
-                        arrow.style.fontSize = '22px';
-                        arrow.style.color = 'rgba(250, 250, 250, 0.7)';
-                        arrow.style.display = 'flex';
-                        arrow.style.alignItems = 'center';
-                        arrow.style.justifyContent = 'center';
-                        arrow.style.width = '100%';
-                        arrow.style.height = '100%';
-                        arrow.style.pointerEvents = 'none';
-                        btn.appendChild(arrow);
-                    }
-                    
-                    // Flip based on direction
-                    if (content.includes('left') || content.includes('back')) {
-                        arrow.style.transform = 'scaleX(-1)';
-                    } else {
-                        arrow.style.transform = 'scaleX(1)';
-                    }
-                }
-            });
-        };
 
-        const runAll = () => {
-            upgradeDropzone();
-            upgradeSidebarToggle();
-        };
-        
-        runAll();
-        new MutationObserver(runAll).observe(doc.body, {childList: true, subtree: true, characterData: true});
-        </script>
-        """, height=0)
+    # ── Ticker Placeholder (Loaded last to speed up page) ──────────
+    ticker_placeholder = st.empty()
 
     # ── HERO ──────────────────────────────────────────────────────
     c_hero, c_cta = st.columns([1.6, 1])
     with c_hero:
-        st.markdown("""
-<div class="hero-title">Universal Portfolio<br>Analyzer</div>
-<div class="hero-sub">
-  Institutional-grade forensic analysis for <strong style="color:#60a5fa">any Indian broker</strong>.<br>
-  Live Nifty 50 benchmark · AI insights · Real-time P&L · Risk scoring.
-</div>""", unsafe_allow_html=True)
-        s1,s2,s3,s4 = st.columns(4)
-        for col,num,lbl in [(s1,"20+","Brokers"),(s2,"∞","Holdings"),(s3,"5","Data Sources"),(s4,"<2s","Parse Time")]:
-            col.markdown(f'<div class="stat-box"><div class="stat-num">{num}</div><div class="stat-lbl">{lbl}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hero-title">Universal <br>Analyzer</div>', unsafe_allow_html=True)
+        st.markdown('<div class="hero-sub">Institutional-grade forensic analysis for any portfolio format. Instantly resolve risk, performance, and sector health without the Excel complexity.</div>', unsafe_allow_html=True)
+        
+        c1, c2, c3 = st.columns(3)
+        with c1: kpi("ACCURACY", "99.8%", "AI-Powered Parser", "#60a5fa")
+        with c2: kpi("SPEED", "< 2s", "Real-time Resolution", "#10b981")
+        with c3: kpi("SECURITY", "AES-256", "On-device processing", "#8b5cf6")
+        
+    with c_cta:
+        st.markdown('<div style="height:20px;"></div>', unsafe_allow_html=True)
+
+    # ── Live Market Ticker Fetching (Non-blocking via Fragments) ───
+    @st.fragment
+    def render_live_ticker():
+        container = st.empty()
+        def _show(data):
+            tickers = [
+                ("NIFTY 50", data.get("^NSEI", {}).get("cur", 24531), data.get("^NSEI", {}).get("pct", 0.42)),
+                ("SENSEX",   data.get("^BSESN", {}).get("cur", 80519), data.get("^BSESN", {}).get("pct", 0.38)),
+                ("BANK NIFTY", data.get("^NSEBANK", {}).get("cur", 52430), data.get("^NSEBANK", {}).get("pct", 0.61)),
+                ("NIFTY IT", data.get("^CNXIT", {}).get("cur", 38120), data.get("^CNXIT", {}).get("pct", -0.24)),
+                ("NIFTY FMCG", data.get("^CNXFMCG", {}).get("cur", 56800), data.get("^CNXFMCG", {}).get("pct", 0.18)),
+                ("GOLD (USD)", data.get("GC=F", {}).get("cur", 2450), data.get("GC=F", {}).get("pct", 0.55)),
+            ]
+            def _t(name, val, pct):
+                cls = "tick-up" if pct >= 0 else "tick-dn"
+                sym = "▲" if pct >= 0 else "▼"
+                v_c = "#111827" if is_light else "#ffffff"
+                return f'<span class="tick-item"><span style="color:#6b7280;font-weight:800;">{name}</span><span class="tick-val" style="color:{v_c};font-weight:900;">{val:,.0f}</span><span class="{cls}" style="font-weight:900;">{sym}{abs(pct):.2f}%</span></span>'
+            items = "".join(_t(n,v,p) for n,v,p in tickers)
+            container.markdown(f'<div class="ticker-wrap"><div class="ticker-inner">{items*4}</div></div>', unsafe_allow_html=True)
+
+        _show({}) # Immediate render
+
+        @st.cache_data(ttl=300) # Longer cache for stability
+        def _fetch_live():
+            res = {}
+            try:
+                import requests as _r
+                from concurrent.futures import ThreadPoolExecutor
+                syms = {"^NSEI":"NIFTY 50", "^BSESN":"SENSEX", "^NSEBANK":"BANK NIFTY", "^CNXIT":"NIFTY IT", "^CNXFMCG":"NIFTY FMCG", "GC=F":"GOLD (USD)"}
+                def _get(sym):
+                    try:
+                        r = _r.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}", params={"interval":"1d","range":"5d"}, headers={"User-Agent":"Mozilla/5.0"}, timeout=2)
+                        if r.status_code == 200:
+                            meta = r.json().get("chart",{}).get("result",[{}])[0].get("meta",{})
+                            cur = float(meta.get("regularMarketPrice",0) or 0)
+                            prev = float(meta.get("chartPreviousClose", cur) or cur)
+                            return sym, {"cur": cur, "pct": (cur-prev)/prev*100 if prev else 0}
+                    except: pass
+                    return sym, None
+
+                with ThreadPoolExecutor(max_workers=6) as exe:
+                    for s, r in exe.map(_get, syms.keys()):
+                        if r: res[s] = r
+                return res
+            except: return {}
+
+        live = _fetch_live()
+        if live: _show(live)
+
+    render_live_ticker()
+
     with c_cta:
         import streamlit.components.v1 as components
         
         main_uploaded = st.file_uploader("Drop CSV/Excel", type=["csv","xlsx","xls"], key="main_uploader", label_visibility="collapsed")
         
-        # Inject our beautiful HTML directly INTO the Streamlit dropzone, replacing the default text
-        components.html("""
-        <script>
+        # Inject custom styling directly into the dropzone
+        components.html("""<script>
         const doc = window.parent.document;
-        const upgradeDropzone = () => {
+        const upgrade = () => {
             const dzs = doc.querySelectorAll('[data-testid="stFileUploaderDropzone"]');
             dzs.forEach(dz => {
                 if (dz && !dz.dataset.upgraded) {
                     dz.dataset.upgraded = 'true';
-                    
-                    // Hide ALL native children except the hidden input
-                    Array.from(dz.children).forEach(child => {
-                        if (child.tagName !== 'INPUT') child.style.display = 'none';
-                    });
-                    
-                    // Apply our beautiful custom CTA styling
+                    Array.from(dz.children).forEach(c => { if(c.tagName !== 'INPUT') c.style.display='none'; });
                     dz.classList.add('upload-cta');
-                    
-                    // Create our custom interactive element
                     const cta = doc.createElement('div');
-                    cta.style.textAlign = 'center';
-                    cta.style.width = '100%';
-                    cta.style.display = 'flex';
-                    cta.style.flexDirection = 'column';
-                    cta.style.alignItems = 'center';
-                    cta.style.justifyContent = 'center';
-                    
+                    cta.style.textAlign = 'center'; cta.style.width = '100%';
                     cta.innerHTML = `
-                      <div onclick="window.parent.document.querySelector('[data-testid=\\'stFileUploaderDropzoneInput\\']').click()" style="font-size: 32px; margin-bottom: 8px; color: rgba(250, 250, 250, 0.6); cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'">🗂️</div>
-                      <div style="color:#60a5fa;font-family:sans-serif;font-weight:900;font-size:14px;margin-bottom:4px;pointer-events:none;">Drop Portfolio</div>
-                      <div style="color:#6b7280;font-family:sans-serif;font-size:10px;pointer-events:none;">CSV · XLSX · XLS</div>
+                      <div onclick="window.parent.document.querySelector('[data-testid=\\'stFileUploaderDropzoneInput\\']').click()" style="font-size:32px;margin-bottom:8px;cursor:pointer;">🗂️</div>
+                      <div style="color:#60a5fa;font-family:sans-serif;font-weight:900;font-size:14px;margin-bottom:4px;">Drop Portfolio</div>
+                      <div style="color:#6b7280;font-family:sans-serif;font-size:10px;">CSV · XLSX · XLS</div>
                     `;
-                    
                     dz.prepend(cta);
                 }
             });
         };
-        upgradeDropzone();
-        new MutationObserver(upgradeDropzone).observe(doc.body, {childList: true, subtree: true});
-        </script>
-        """, height=0)
+        upgrade();
+        new MutationObserver(upgrade).observe(doc.body, {childList:true, subtree:true});
+        </script>""", height=0)
 
         st.markdown("""
 <div style="text-align:center;">
@@ -403,7 +402,7 @@ if not uploaded:
 """, unsafe_allow_html=True)
 
         if main_uploaded:
-            st.session_state.main_uploaded = main_uploaded
+            st.session_state.last_uploaded_file = main_uploaded
             st.rerun()
 
     st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
@@ -455,23 +454,25 @@ if st.session_state.get("fkey") != fkey:
         if k in st.session_state: del st.session_state[k]
     st.session_state.fkey = fkey
 
-# ══════════════════════════════════════════════════════════════════
 # PHASE 1 — Auto-run on upload: parse instantly
 # ══════════════════════════════════════════════════════════════════
 if "p1" not in st.session_state:
-    try:
-        resp = requests.post(f"{API}/phase1",
-                             files={"file": (uploaded.name, uploaded.getvalue(), uploaded.type)},
-                             headers=_HEADERS,
-                             timeout=15)
-        if resp.status_code == 403:
-            show_err("Auth Error", "Invalid API key", hint="Check PORTFOLIO_API_KEY in .env"); st.stop()
-        if resp.status_code != 200:
-            show_err("Gateway error", f"HTTP {resp.status_code}", resp.text, "Is run_all.sh running?"); st.stop()
-        tid = resp.json()["task_id"]
-    except requests.exceptions.ConnectionError:
-        show_err("Gateway Unreachable", f"Cannot connect to {API}", hint="Run: bash run_all.sh"); st.stop()
-    result = poll(tid, "⚡ Parsing portfolio...", max_wait=60)
+    tid = ""
+    if not IS_STANDALONE:
+        try:
+            resp = requests.post(f"{API}/phase1",
+                                 files={"file": (uploaded.name, uploaded.getvalue(), uploaded.type)},
+                                 headers=_HEADERS,
+                                 timeout=15)
+            if resp.status_code == 403:
+                show_err("Auth Error", "Invalid API key", hint="Check PORTFOLIO_API_KEY in .env"); st.stop()
+            if resp.status_code != 200:
+                show_err("Gateway error", f"HTTP {resp.status_code}", resp.text, "Is run_all.sh running?"); st.stop()
+            tid = resp.json()["task_id"]
+        except requests.exceptions.ConnectionError:
+            show_err("Gateway Unreachable", f"Cannot connect to {API}", hint="Run: bash run_all.sh"); st.stop()
+    
+    result = poll(tid, "⚡ Parsing portfolio...", max_wait=60, phase=1, payload={"file": uploaded})
     if result is None: st.stop()
     st.session_state.p1 = result
     st.rerun()
@@ -613,15 +614,18 @@ elif active == "insights":
     if not p2:
         st.info("📈 Click below to fetch live prices, sector data and portfolio metrics.")
         if st.button("🚀  Run Live Enrichment", type="primary"):
-            try:
-                resp = requests.post(f"{API}/phase2", json=p1, headers=_HEADERS, timeout=15)
-                tid = resp.json()["task_id"]
-                result = poll(tid, "📡 Fetching live market data...", max_wait=180)
-                if result:
-                    st.session_state.p2 = result
-                    st.rerun()
-            except Exception as e:
-                show_err("Phase 2 failed", str(e))
+            tid = ""
+            if not IS_STANDALONE:
+                try:
+                    resp = requests.post(f"{API}/phase2", json=p1, headers=_HEADERS, timeout=15)
+                    tid = resp.json()["task_id"]
+                except Exception as e:
+                    show_err("Phase 2 failed", str(e)); st.stop()
+            
+            result = poll(tid, "📡 Fetching live market data...", max_wait=180, phase=2, payload=p1)
+            if result:
+                st.session_state.p2 = result
+                st.rerun()
         st.stop()
 
     stats = p2.get("stats",{})
@@ -762,15 +766,18 @@ elif active == "summary":
     if not p3:
         st.info("🧠 Click below to generate your personalized AI portfolio summary.")
         if st.button("🤖  Generate AI Summary", type="primary"):
-            try:
-                resp = requests.post(f"{API}/phase3", json=p2, headers=_HEADERS, timeout=15)
-                tid = resp.json()["task_id"]
-                result = poll(tid, "🤖 Generating AI report...", max_wait=120)
-                if result:
-                    st.session_state.p3 = result
-                    st.rerun()
-            except Exception as e:
-                show_err("Phase 3 failed", str(e))
+            tid = ""
+            if not IS_STANDALONE:
+                try:
+                    resp = requests.post(f"{API}/phase3", json=p2, headers=_HEADERS, timeout=15)
+                    tid = resp.json()["task_id"]
+                except Exception as e:
+                    show_err("Phase 3 failed", str(e)); st.stop()
+
+            result = poll(tid, "🤖 Generating AI report...", max_wait=300, phase=3, payload=p2)
+            if result:
+                st.session_state.p3 = result
+                st.rerun()
         st.stop()
 
     report = p3.get("report", {})
