@@ -110,18 +110,20 @@ def run_enrich_analytics(parsed_data: dict) -> dict:
             df[col] = 0.0
     df['isin'] = df['isin'].fillna('').astype(str)
 
-    # ── 1. Supabase ISIN cache ────────────────────────────────────
+    # ── 1. ISIN Resolution (Supabase Cache + AI/Web Search) ───────
+    from services.database import ISINResolverService, SupabaseService
     db = SupabaseService(url=os.getenv("SUPABASE_URL"), key=os.getenv("SUPABASE_KEY"))
-    missing_mask = df['isin'].str.len() < 5
-    if missing_mask.any() and db.is_configured():
-        names  = df.loc[missing_mask, 'stock_name'].unique().tolist()
-        cached = db.resolve_instruments(names)
-        for name, info in cached.items():
-            m = df['stock_name'] == name
-            if info.get("isin"):   df.loc[m, 'isin']         = info["isin"]
-            if info.get("sector") and info["sector"] != "Unknown":
-                                    df.loc[m, 'sector']       = info["sector"]
-            if info.get("ticker"): df.loc[m, '_ticker_hint'] = info["ticker"]
+    resolver = ISINResolverService()
+    
+    missing_mask = (df['isin'].str.len() < 5)
+    if missing_mask.any():
+        to_resolve = df.loc[missing_mask, 'stock_name'].unique().tolist()
+        resolved = resolver.resolve_batch(to_resolve)
+        for name, isin in resolved.items():
+            if isin:
+                df.loc[df['stock_name'] == name, 'isin'] = isin
+    
+    print(f"[Phase2] ISIN resolution: {df['isin'].str.len().gt(5).sum()}/{len(df)} holdings identified")
 
     # ── 2. Live market data ───────────────────────────────────────
     mkt = MarketDataService(

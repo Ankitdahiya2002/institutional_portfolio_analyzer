@@ -403,17 +403,6 @@ CRITICAL: Return ONLY valid JSON. No markdown, no extra text.
         if parsed:
             return parsed
             
-        # Warm, easy-language fallback if AI is unavailable
-        safe_fallback = {
-            "behavioral_signature": "Steady Long-Term Player",
-            "strategic_verdict": "Your portfolio is like a thali — it has most of the right items, but the portions need a little balancing.",
-            "concentration_risk": "Your money is not all in one basket, which is good — but keep an eye so one stock doesn't become too dominant, like too much salt in a dish.",
-            "rebalancing_advice": [
-                "Review the stocks that are down — decide if they deserve more time or need to go",
-                "Make sure you have exposure to at least 4-5 different sectors, not just one industry",
-                "If one position has grown very large, consider taking some profits off the table"
-            ],
-            "simple_summary": "Think of your portfolio like a kitchen garden — some plants are growing well, some need water, and a couple should be uprooted. Overall, the soil is good."
-        }
-
-        return safe_fallback
+        # Return None if AI is unavailable — this allows the app to use its 
+        # local Dynamic Insights Engine instead of showing static text.
+        return None

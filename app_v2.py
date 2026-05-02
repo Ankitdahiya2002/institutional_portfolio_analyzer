@@ -6,21 +6,9 @@ from io import BytesIO
 from dotenv import load_dotenv
 load_dotenv()
 
-# Standalone Task Handlers (Resolves Streamlit Cloud 'Gateway Unreachable' errors)
-try:
-    from tasks import run_parse, run_enrich_analytics, run_ai_report
-    IS_STANDALONE = True
-except ImportError:
-    IS_STANDALONE = False
-    API = os.getenv("API_URL", "http://127.0.0.1:8000")
-    def _get_api_key():
-        key = os.getenv("PORTFOLIO_API_KEY", "")
-        if not key:
-            try: key = requests.get(f"{API}/apikey", timeout=3).json().get("api_key", "")
-            except Exception: pass
-        return key
-    _API_KEY = _get_api_key()
-    _HEADERS = {"X-API-Key": _API_KEY}
+# Standalone Architecture (Direct task execution for maximum performance)
+from tasks import run_parse, run_enrich_analytics, run_ai_report
+IS_STANDALONE = True
 
 st.set_page_config(page_title="Portfolio Analyzer V2", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
@@ -68,11 +56,7 @@ def show_err(title, cause, raw="", hint=""):
     raw_h = f"<div class='raw'>{raw[:400]}</div>" if raw else ""
     hint_h = f"<div class='hint'>💡 {hint}</div>" if hint else ""
     st.markdown(f"<div class='err'><div class='hdr'>❌ Error</div><div class='etitle'>{title}</div><div class='ecause'>{cause}</div>{raw_h}{hint_h}</div>", unsafe_allow_html=True)
-    log = os.path.join(os.path.dirname(__file__), "celery.log")
-    if os.path.exists(log):
-        with open(log) as f: lines = f.readlines()
-        with st.expander("📋 API Logs"):
-            st.info("Check terminal running uvicorn for detailed logs.")
+    pass
 
 def poll(task_id, label, max_wait=180, phase=None, payload=None):
     """Execution wrapper — uses local tasks if standalone, else polls API."""
@@ -198,12 +182,6 @@ with st.sidebar:
             color: #111827 !important;
         }
         .feat-card:hover .feat-title { color: #2563eb !important; }
-        .feat-card:hover .feat-desc { color: #374151 !important; }
-        
-        /* Insight boxes in light mode */
-        .vbox {
-            background: #eff6ff !important;
-            color: #1e40af !important;
             border-color: #3b82f6 !important;
         }
         .rbox {
@@ -784,8 +762,8 @@ elif active == "summary":
     if not report:
         st.info("No report data found."); st.stop()
 
-    sig = report.get("behavioral_signature","Portfolio")
-    st.markdown(f"<div class='sig'><div style='color:#60a5fa;font-size:10px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;margin-bottom:6px;'>INVESTOR PROFILE</div><div style='color:#fff;font-size:28px;font-weight:900;'>{sig}</div></div>", unsafe_allow_html=True)
+    sig = report.get("behavioral_signature","Portfolio Builder")
+    st.markdown(f"<div class='sig'><div style='color:#60a5fa;font-size:10px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;margin-bottom:6px;'>INVESTOR PROFILE</div><div style='font-size:28px;font-weight:900;'>{sig}</div></div>", unsafe_allow_html=True)
 
     verdict = report.get("strategic_verdict","")
     conc    = report.get("concentration_risk","")
