@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.streamlit/
+*.csv
+*.xlsx
+*.xls
+.DS_Store
+venv/
+env/
+node_modules/
+.ipynb_checkpoints/
