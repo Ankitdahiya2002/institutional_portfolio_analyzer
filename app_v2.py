@@ -37,6 +37,90 @@ html,body,[data-testid="stAppViewContainer"]{background:var(--background-color)!
 /* Light mode is now handled dynamically via the sidebar toggle below */
 </style>""", unsafe_allow_html=True)
 
+
+@st.fragment(run_every=300)
+def render_market_pulse(limit=None):
+    container = st.empty()
+    
+    @st.cache_data(ttl=300)
+    def _fetch_news():
+        import xml.etree.ElementTree as ET
+        feeds = [
+            ("CNBC TV18", "https://www.cnbctv18.com/common/rss/market.xml"),
+            ("ET Markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
+            ("Moneycontrol", "https://www.moneycontrol.com/rss/marketreports.xml"),
+            ("SEBI PR", "https://www.sebi.gov.in/sebiweb/home/rss_pr.xml"),
+            ("Google Finance", "https://news.google.com/rss/search?q=when:24h+Indian+Stock+Market&hl=en-IN&gl=IN&ceid=IN:en")
+        ]
+        news_items = []
+        import concurrent.futures
+        
+        def _get_one(source, url):
+            try:
+                r = requests.get(url, timeout=4, headers={"User-Agent":"Mozilla/5.0"})
+                if r.status_code == 200:
+                    root = ET.fromstring(r.text)
+                    items = []
+                    for item in root.findall(".//item")[:5]:
+                        title = item.find("title").text
+                        link = item.find("link").text
+                        pub = item.find("pubDate").text if item.find("pubDate") is not None else "Recent"
+                        items.append({"title": title, "link": link, "source": source, "date": pub})
+                    return items
+            except: return []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            results = ex.map(lambda p: _get_one(*p), feeds)
+            for r_list in results:
+                news_items.extend(r_list)
+        
+        return sorted(news_items, key=lambda x: x.get("date",""), reverse=True)
+
+    items = _fetch_news()
+    if limit: items = items[:limit]
+    
+    if not items:
+        container.info("No recent news found. Checking feeds..."); return
+
+    is_light = st.session_state.get("is_light", False)
+
+    # Use 2 columns for homepage, 1 for dashboard
+    if limit:
+        c1, c2 = container.columns(2)
+        half = len(items)//2
+        for idx, (col, subset) in enumerate(zip([c1, c2], [items[:half], items[half:]])):
+            html = ""
+            for i in subset:
+                txt_c = "#d1d5db" if not is_light else "#1f2937"
+                bg_c = "#0f1117" if not is_light else "#ffffff"
+                brd_c = "#1e2030" if not is_light else "#e5e7eb"
+
+                html += f"""
+                <div style='background:{bg_c}; border:1px solid {brd_c}; border-radius:12px; padding:16px; margin-bottom:12px; height:100px; overflow:hidden;'>
+                    <div style='display:flex; justify-content:space-between; margin-bottom:4px;'>
+                        <span style='background:#1e293b; color:#94a3b8; font-size:8px; font-weight:800; padding:1px 6px; border-radius:3px;'>{i['source']}</span>
+                        <span style='color:#4b5563; font-size:8px;'>{i['date'][:16]}</span>
+                    </div>
+                    <a href='{i['link']}' target='_blank' style='text-decoration:none; color:{txt_c}; font-size:12px; font-weight:700; display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'>{i['title']}</a>
+                </div>"""
+            col.markdown(html, unsafe_allow_html=True)
+    else:
+        html = ""
+        for i in items:
+            txt_c = "#d1d5db" if not is_light else "#1f2937"
+            bg_c = "#0f1117" if not is_light else "#ffffff"
+            brd_c = "#1e2030" if not is_light else "#e5e7eb"
+
+            html += f"""
+            <div style='background:{bg_c}; border:1px solid {brd_c}; border-radius:12px; padding:16px; margin-bottom:12px;'>
+                <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                    <span style='background:#1e293b; color:#94a3b8; font-size:9px; font-weight:800; padding:2px 8px; border-radius:4px; text-transform:uppercase;'>{i['source']}</span>
+                    <span style='color:#4b5563; font-size:9px;'>{i['date'][:16]}</span>
+                </div>
+                <a href='{i['link']}' target='_blank' style='text-decoration:none; color:{txt_c}; font-size:14px; font-weight:700; line-height:1.4;'>{i['title']}</a>
+            </div>"""
+        container.markdown(html, unsafe_allow_html=True)
+
 def fmt(v):
     try:
         v=float(v); neg=v<0; v=abs(int(v)); s=str(v)
@@ -416,13 +500,11 @@ div[data-testid="stStatusWidget"], .stStatusWidget, div[class*="stFragmentStatus
 
     st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
 
-    # ── SUPPORTED BROKERS ─────────────────────────────────────────
-    st.markdown("<div class='sec'>🏦 Supported Brokers</div>", unsafe_allow_html=True)
-    brokers = ["Zerodha","Groww","Dhan","HDFC Sec","Angel One","Upstox","ICICI Direct","Kotak Neo","5paisa","IndMoney","NJ Wealth","Motilal Oswal","SBI Cap","Axis Direct","Paytm Money","Sharekhan"]
-    cols = st.columns(8)
-    for i, b in enumerate(brokers):
-        cols[i % 8].markdown(f'<div class="broker-chip">{b}</div>', unsafe_allow_html=True)
-
+    st.markdown("<div style='height:48px'></div>", unsafe_allow_html=True)
+    
+    st.markdown("<div class='sec'>📰 Market Pulse — Indian Markets</div>", unsafe_allow_html=True)
+    render_market_pulse(limit=4)
+    
     st.markdown("<div style='height:48px'></div>", unsafe_allow_html=True)
     st.stop()
 
@@ -533,7 +615,7 @@ st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
 # ── PHASE NAVIGATION BUTTONS ──────────────────────────────────────
 active = st.session_state.get("active_phase", "market")
-b1,b2,b3,_ = st.columns([1,1,1,5])
+b1,b2,b3,b4,_ = st.columns([1,1,1,1.2,4])
 with b1:
     if st.button("📊  Market & Stats", use_container_width=True, type="primary" if active=="market" else "secondary"):
         st.session_state.active_phase = "market"; st.rerun()
@@ -545,6 +627,9 @@ with b3:
     lbl3 = "🧠  AI Summary" + (" ✓" if p3 else "")
     if st.button(lbl3, use_container_width=True, type="primary" if active=="summary" else "secondary"):
         st.session_state.active_phase = "summary"; st.rerun()
+with b4:
+    if st.button("📰  Market Pulse", use_container_width=True, type="primary" if active=="news" else "secondary"):
+        st.session_state.active_phase = "news"; st.rerun()
 
 st.markdown("<hr style='border-color:#1e2030;margin:10px 0 18px;'>", unsafe_allow_html=True)
 
@@ -784,3 +869,95 @@ elif active == "summary":
         st.markdown("<div class='sec'>🔬 Detailed Observations</div>", unsafe_allow_html=True)
         for o in obs:
             st.markdown(f"<div style='background:#0f1117;border:1px solid #1e2030;border-radius:8px;padding:10px 14px;margin-bottom:6px;color:#9ca3af;font-size:13px;'>• {o}</div>", unsafe_allow_html=True)
+
+@st.fragment(run_every=300)
+def render_market_pulse(limit=None):
+    container = st.empty()
+    
+    @st.cache_data(ttl=300)
+    def _fetch_news():
+        import xml.etree.ElementTree as ET
+        feeds = [
+            ("CNBC TV18", "https://www.cnbctv18.com/common/rss/market.xml"),
+            ("ET Markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
+            ("Moneycontrol", "https://www.moneycontrol.com/rss/marketreports.xml"),
+            ("SEBI PR", "https://www.sebi.gov.in/sebiweb/home/rss_pr.xml"),
+            ("Google Finance", "https://news.google.com/rss/search?q=when:24h+Indian+Stock+Market&hl=en-IN&gl=IN&ceid=IN:en")
+        ]
+        news_items = []
+        import concurrent.futures
+        
+        def _get_one(source, url):
+            try:
+                r = requests.get(url, timeout=4, headers={"User-Agent":"Mozilla/5.0"})
+                if r.status_code == 200:
+                    root = ET.fromstring(r.text)
+                    items = []
+                    for item in root.findall(".//item")[:5]:
+                        title = item.find("title").text
+                        link = item.find("link").text
+                        pub = item.find("pubDate").text if item.find("pubDate") is not None else "Recent"
+                        items.append({"title": title, "link": link, "source": source, "date": pub})
+                    return items
+            except: return []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            results = ex.map(lambda p: _get_one(*p), feeds)
+            for r_list in results:
+                news_items.extend(r_list)
+        
+        return sorted(news_items, key=lambda x: x.get("date",""), reverse=True)
+
+    items = _fetch_news()
+    if limit: items = items[:limit]
+    
+    if not items:
+        container.info("No recent news found. Checking feeds..."); return
+
+    # Use 2 columns for homepage, 1 for dashboard
+    if limit:
+        c1, c2 = container.columns(2)
+        half = len(items)//2
+        for idx, (col, subset) in enumerate(zip([c1, c2], [items[:half], items[half:]])):
+            html = ""
+            for i in subset:
+                color = "#10b981" if any(x in i['title'].lower() for x in ['bull', 'jump', 'gain', 'rise', 'buy', 'high']) else \
+                        ("#f43f5e" if any(x in i['title'].lower() for x in ['bear', 'slump', 'fall', 'drop', 'sell', 'low']) else "#9ca3af")
+                txt_c = "#d1d5db" if not is_light else "#1f2937"
+                bg_c = "#0f1117" if not is_light else "#ffffff"
+                brd_c = "#1e2030" if not is_light else "#e5e7eb"
+
+                html += f"""
+                <div style='background:{bg_c}; border:1px solid {brd_c}; border-radius:12px; padding:16px; margin-bottom:12px; height:100px; overflow:hidden;'>
+                    <div style='display:flex; justify-content:space-between; margin-bottom:4px;'>
+                        <span style='background:#1e293b; color:#94a3b8; font-size:8px; font-weight:800; padding:1px 6px; border-radius:3px;'>{i['source']}</span>
+                        <span style='color:#4b5563; font-size:8px;'>{i['date'][:16]}</span>
+                    </div>
+                    <a href='{i['link']}' target='_blank' style='text-decoration:none; color:{txt_c}; font-size:12px; font-weight:700; display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'>{i['title']}</a>
+                </div>"""
+            col.markdown(html, unsafe_allow_html=True)
+    else:
+        html = ""
+        for i in items:
+            color = "#10b981" if any(x in i['title'].lower() for x in ['bull', 'jump', 'gain', 'rise', 'buy', 'high']) else \
+                    ("#f43f5e" if any(x in i['title'].lower() for x in ['bear', 'slump', 'fall', 'drop', 'sell', 'low']) else "#9ca3af")
+            txt_c = "#d1d5db" if not is_light else "#1f2937"
+            bg_c = "#0f1117" if not is_light else "#ffffff"
+            brd_c = "#1e2030" if not is_light else "#e5e7eb"
+
+            html += f"""
+            <div style='background:{bg_c}; border:1px solid {brd_c}; border-radius:12px; padding:16px; margin-bottom:12px;'>
+                <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
+                    <span style='background:#1e293b; color:#94a3b8; font-size:9px; font-weight:800; padding:2px 8px; border-radius:4px; text-transform:uppercase;'>{i['source']}</span>
+                    <span style='color:#4b5563; font-size:9px;'>{i['date'][:16]}</span>
+                </div>
+                <a href='{i['link']}' target='_blank' style='text-decoration:none; color:{txt_c}; font-size:14px; font-weight:700; line-height:1.4;'>{i['title']}</a>
+            </div>"""
+        container.markdown(html, unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════
+# MARKET PULSE (News Tab)
+# ══════════════════════════════════════════════════════════════════
+if active == "news":
+    st.markdown("<div class='sec'>📰 Market Pulse — Indian Markets</div>", unsafe_allow_html=True)
+    render_market_pulse()
