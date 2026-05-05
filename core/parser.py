@@ -290,6 +290,9 @@ COLUMN_MAP = {
     # sector & asset type
     'sector': 'sector', 'industry': 'sector',
     'assettype': 'asset_type', 'instrumenttype': 'asset_type',
+    # date (for XIRR and Tax logic)
+    'date': 'buy_date', 'buydate': 'buy_date', 'purchasedate': 'buy_date',
+    'allocationdate': 'buy_date', 'holdingperiod': 'buy_date',
 }
 
 def _norm_col(col):

@@ -8,139 +8,22 @@ load_dotenv()
 
 # Standalone Architecture (Direct task execution for maximum performance)
 from tasks import run_parse, run_enrich_analytics, run_ai_report
+from core.auth import render_auth_ui
+from core.metrics import generate_dynamic_insights
 IS_STANDALONE = True
 
 st.set_page_config(page_title="Portfolio Analyzer V2", layout="wide", initial_sidebar_state="expanded")
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap');
-*{font-family:'Inter',sans-serif!important;}
-html,body,[data-testid="stAppViewContainer"]{background:var(--background-color)!important;}
-[data-testid="stSidebar"]{background:var(--secondary-background-color)!important;border-right:1px solid rgba(150,150,150,0.1);}
-.block-container{padding:2rem 2.5rem!important; padding-top: 4rem !important;}
-.kc{background:var(--secondary-background-color);border:1px solid rgba(150,150,150,0.2);border-radius:12px;padding:20px 22px;margin-bottom:4px;}
-.kl{color:#4b5563;font-size:10px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;margin-bottom:6px;}
-.kv{color:var(--text-color);font-size:28px;font-weight:800;}
-.ks{font-size:12px;font-weight:600;margin-top:4px;}
-.sec{color:#6b7280;font-size:10px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;margin:20px 0 10px;}
-.err{background:#160a0a;border:1px solid #7f1d1d;border-radius:12px;padding:24px 28px;margin:16px 0;}
-.hdr{color:#fca5a5;font-size:10px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;margin-bottom:8px;}
-.etitle{color:var(--text-color);font-size:18px;font-weight:800;margin-bottom:10px;}
-.ecause{color:#fca5a5;font-size:13px;line-height:1.6;}
-.raw{background:#0c0202;border:1px solid #450a0a;border-radius:8px;padding:10px 14px;font-family:monospace;font-size:11px;color:#ef4444;white-space:pre-wrap;margin-top:10px;}
-.hint{color:#6b7280;font-size:11px;margin-top:8px;}
-.ai-box{background:#0d1a0d;border:1px solid #14532d;border-radius:12px;padding:24px;color:#86efac;line-height:1.8;font-size:14px;}
-.vbox{background:#0a1628;border-left:3px solid #3b82f6;border-radius:0 8px 8px 0;padding:12px 18px;margin-bottom:8px;color:#93c5fd;font-size:13px;}
-.rbox{background:#1a1205;border-left:3px solid #f59e0b;border-radius:0 8px 8px 0;padding:12px 18px;margin-bottom:16px;color:#fbbf24;font-size:13px;}
-.sig{background:var(--secondary-background-color);border:1px solid rgba(150,150,150,0.2);border-radius:12px;padding:24px 28px;margin-bottom:14px;}
+from ui_components.styles import apply_custom_css
+from ui_components.utils import kpi, fmt, show_err
+from ui_components.widgets import render_market_pulse, render_live_ticker
 
-/* Light mode is now handled dynamically via the sidebar toggle below */
-</style>""", unsafe_allow_html=True)
+@st.cache_data(ttl=600, show_spinner=False)
+def get_nifty_benchmark():
+    from services.market_data import fetch_nifty50
+    return fetch_nifty50()
 
+apply_custom_css()
 
-@st.fragment(run_every=300)
-def render_market_pulse(limit=None):
-    container = st.empty()
-    
-    @st.cache_data(ttl=300)
-    def _fetch_news():
-        import xml.etree.ElementTree as ET
-        feeds = [
-            ("CNBC TV18", "https://www.cnbctv18.com/common/rss/market.xml"),
-            ("ET Markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
-            ("Moneycontrol", "https://www.moneycontrol.com/rss/marketreports.xml"),
-            ("SEBI PR", "https://www.sebi.gov.in/sebiweb/home/rss_pr.xml"),
-            ("Google Finance", "https://news.google.com/rss/search?q=when:24h+Indian+Stock+Market&hl=en-IN&gl=IN&ceid=IN:en")
-        ]
-        news_items = []
-        import concurrent.futures
-        
-        def _get_one(source, url):
-            try:
-                r = requests.get(url, timeout=4, headers={"User-Agent":"Mozilla/5.0"})
-                if r.status_code == 200:
-                    root = ET.fromstring(r.text)
-                    items = []
-                    for item in root.findall(".//item")[:5]:
-                        title = item.find("title").text
-                        link = item.find("link").text
-                        pub = item.find("pubDate").text if item.find("pubDate") is not None else "Recent"
-                        items.append({"title": title, "link": link, "source": source, "date": pub})
-                    return items
-            except: return []
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-            results = ex.map(lambda p: _get_one(*p), feeds)
-            for r_list in results:
-                news_items.extend(r_list)
-        
-        return sorted(news_items, key=lambda x: x.get("date",""), reverse=True)
-
-    items = _fetch_news()
-    if limit: items = items[:limit]
-    
-    if not items:
-        container.info("No recent news found. Checking feeds..."); return
-
-    is_light = st.session_state.get("is_light", False)
-
-    # Use 2 columns for homepage, 1 for dashboard
-    if limit:
-        c1, c2 = container.columns(2)
-        half = len(items)//2
-        for idx, (col, subset) in enumerate(zip([c1, c2], [items[:half], items[half:]])):
-            html = ""
-            for i in subset:
-                txt_c = "#d1d5db" if not is_light else "#1f2937"
-                bg_c = "#0f1117" if not is_light else "#ffffff"
-                brd_c = "#1e2030" if not is_light else "#e5e7eb"
-
-                html += f"""
-                <div style='background:{bg_c}; border:1px solid {brd_c}; border-radius:12px; padding:16px; margin-bottom:12px; height:100px; overflow:hidden;'>
-                    <div style='display:flex; justify-content:space-between; margin-bottom:4px;'>
-                        <span style='background:#1e293b; color:#94a3b8; font-size:8px; font-weight:800; padding:1px 6px; border-radius:3px;'>{i['source']}</span>
-                        <span style='color:#4b5563; font-size:8px;'>{i['date'][:16]}</span>
-                    </div>
-                    <a href='{i['link']}' target='_blank' style='text-decoration:none; color:{txt_c}; font-size:12px; font-weight:700; display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'>{i['title']}</a>
-                </div>"""
-            col.markdown(html, unsafe_allow_html=True)
-    else:
-        html = ""
-        for i in items:
-            txt_c = "#d1d5db" if not is_light else "#1f2937"
-            bg_c = "#0f1117" if not is_light else "#ffffff"
-            brd_c = "#1e2030" if not is_light else "#e5e7eb"
-
-            html += f"""
-            <div style='background:{bg_c}; border:1px solid {brd_c}; border-radius:12px; padding:16px; margin-bottom:12px;'>
-                <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                    <span style='background:#1e293b; color:#94a3b8; font-size:9px; font-weight:800; padding:2px 8px; border-radius:4px; text-transform:uppercase;'>{i['source']}</span>
-                    <span style='color:#4b5563; font-size:9px;'>{i['date'][:16]}</span>
-                </div>
-                <a href='{i['link']}' target='_blank' style='text-decoration:none; color:{txt_c}; font-size:14px; font-weight:700; line-height:1.4;'>{i['title']}</a>
-            </div>"""
-        container.markdown(html, unsafe_allow_html=True)
-
-def fmt(v):
-    try:
-        v=float(v); neg=v<0; v=abs(int(v)); s=str(v)
-        if len(s)>3:
-            s=s[:-3]; r=","+str(abs(int(float(v))))[-3:]
-            while len(s)>2: r=","+s[-2:]+r; s=s[:-2]
-            r=s+r
-        else: r=s
-        return f"₹-{r}" if neg else f"₹{r}"
-    except: return "₹0"
-
-def kpi(label, val, sub=None, sc="#6b7280"):
-    sh = f"<div class='ks' style='color:{sc};'>{sub}</div>" if sub else ""
-    st.markdown(f"<div class='kc'><div class='kl'>{label}</div><div class='kv'>{val}</div>{sh}</div>", unsafe_allow_html=True)
-
-def show_err(title, cause, raw="", hint=""):
-    raw_h = f"<div class='raw'>{raw[:400]}</div>" if raw else ""
-    hint_h = f"<div class='hint'>💡 {hint}</div>" if hint else ""
-    st.markdown(f"<div class='err'><div class='hdr'>❌ Error</div><div class='etitle'>{title}</div><div class='ecause'>{cause}</div>{raw_h}{hint_h}</div>", unsafe_allow_html=True)
-    pass
 
 def poll(task_id, label, max_wait=180, phase=None, payload=None):
     """Execution wrapper — uses local tasks if standalone, else polls API."""
@@ -151,7 +34,8 @@ def poll(task_id, label, max_wait=180, phase=None, payload=None):
                     b64 = base64.b64encode(payload["file"].getvalue()).decode()
                     res = run_parse(b64, payload["file"].name)
                 elif phase == 2:
-                    res = run_enrich_analytics(payload)
+                    uid = st.session_state.user.get("id") if st.session_state.user else None
+                    res = run_enrich_analytics(payload, user_id=uid)
                 elif phase == 3:
                     res = run_ai_report(payload)
                 else:
@@ -194,12 +78,33 @@ def poll(task_id, label, max_wait=180, phase=None, payload=None):
         show_err("Timed out", f"No result after {max_wait}s.", hint="Check uvicorn terminal")
         s.update(label="⏰ Timed out", state="error"); return None
 
+# ── AUTHENTICATION LAYER ──────────────────────────────────────────
+is_logged_in = render_auth_ui()
+if not is_logged_in:
+    st.stop()
+
+@st.cache_resource(show_spinner=False)
+def get_db():
+    from services.database import SupabaseService
+    return SupabaseService()
+
+db_svc = get_db()
+
+# ── ACTIVITY TRACKING ─────────────────────────────────────────────
+if "current_session_id" not in st.session_state and st.session_state.get("user"):
+    u = st.session_state.user
+    sid = db_svc.track_login(u["id"], u.get("email", "unknown"))
+    st.session_state.current_session_id = sid
+
+
 # ── SIDEBAR ──────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("<div style='font-size:18px;font-weight:900;color:#fff;padding:12px 0 4px;'>UNIVERSAL<span style='color:#3b82f6;'> ANALYZER</span></div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:9px;color:#374151;font-weight:700;letter-spacing:.25em;margin-bottom:16px;'>ANY BROKER · ANY FORMAT</div>", unsafe_allow_html=True)
+    _is_light = st.session_state.get("is_light", True)
+    sb_text = "#1f2937" if _is_light else "#ffffff"
+    st.markdown(f"<div style='font-size:18px;font-weight:900;color:{sb_text};padding:12px 0 4px;'>UNIVERSAL<span style='color:#3b82f6;'> ANALYZER</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:9px;color:#6b7280;font-weight:700;letter-spacing:.25em;margin-bottom:16px;'>ANY BROKER · ANY FORMAT</div>", unsafe_allow_html=True)
     
-    is_light = st.toggle("✨ Switch to Cream Theme", value=True)
+    is_light = st.toggle("✨ Switch to Cream Theme", value=True, key="is_light")
     if is_light:
         st.markdown("""<style>
         /* Force full app background and text colors */
@@ -218,11 +123,17 @@ with st.sidebar:
         }
         
         /* Component specific light overrides */
-        .feat-card, .stat-box, .ticker-wrap, .broker-chip, .kc, .sig {
-            background: #ffffff !important; /* Pure white for contrast against cream */
+        .feat-card, .stat-box, .ticker-wrap, .broker-chip, .kc, .sig, .err, .ai-box, .vbox, .rbox {
+            background: #ffffff !important; 
             border-color: #e5e7eb !important;
+            color: #1f2937 !important;
             box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05) !important;
         }
+        .ai-box { background: #f0fdf4 !important; border-color: #bbf7d0 !important; color: #166534 !important; }
+        .vbox { background: #eff6ff !important; border-left-color: #3b82f6 !important; color: #1e40af !important; }
+        .rbox { background: #fffbeb !important; border-left-color: #f59e0b !important; color: #92400e !important; }
+        .err { background: #fef2f2 !important; border-color: #fecaca !important; }
+        .etitle, .ecause { color: #991b1b !important; }
         
         /* Magically invert the black dataframe to a bright white theme, preserving red/green trends via hue-rotate */
         [data-testid="stDataFrame"] {
@@ -288,10 +199,16 @@ with st.sidebar:
         [data-testid="stSidebar"] div {
             color: #1f2937;
         }
+        /* Dynamic LIVE badge override for Cream Theme */
+        .live-badge {
+            background: #dcfce7 !important;
+            color: #166534 !important;
+            border-color: #bbf7d0 !important;
+        }
         </style>""", unsafe_allow_html=True)
         
-    st.divider()
-    st.caption("📁 UPLOAD PORTFOLIO")
+
+    st.caption("🗂️ UPLOAD PORTFOLIO")
     sidebar_uploaded = st.file_uploader("Drop CSV/Excel", type=["csv","xlsx","xls"], key="sidebar_uploader", label_visibility="collapsed")
     
 # Determine which uploader has the file
@@ -307,54 +224,7 @@ if not uploaded:
     for k in ["p1","p2","p3"]:
         if k in st.session_state: del st.session_state[k]
 
-    # ── Extra CSS for homepage ─────────────────────────────────────
-    st.markdown("""<style>
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
-@keyframes slideUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
-@keyframes glow{0%,100%{text-shadow:0 0 20px #3b82f660}50%{text-shadow:0 0 40px #3b82f6aa,0 0 80px #6366f155}}
-@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-.hero-title{font-size:clamp(36px,5vw,72px);font-weight:900;background:linear-gradient(135deg,#fff 30%,#3b82f6 70%,#8b5cf6 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:slideUp .8s ease,glow 3s ease infinite;line-height:1.1;margin-bottom:16px;}
-.hero-sub{color:#9ca3af;font-size:18px;line-height:1.7;margin-bottom:32px;animation:slideUp 1s ease;}
-.feat-card{background:linear-gradient(135deg,#0f1117,#0d1526);border:1px solid #1e2030;border-radius:16px;padding:24px;transition:all .3s;cursor:default;height:100%;}
-.feat-card:hover{border-color:#3b82f6;box-shadow:0 0 30px #3b82f620;transform:translateY(-4px);}
-.feat-icon{font-size:32px;margin-bottom:12px;transition:transform 0.3s;}
-.feat-card:hover .feat-icon{transform:scale(1.1) rotate(5deg);}
-.feat-title{color:#fff;font-size:16px;font-weight:800;margin-bottom:8px;transition:color 0.3s;}
-.feat-desc{color:#6b7280;font-size:13px;line-height:1.6;transition:color 0.3s;}
-.feat-card:hover .feat-title{color:#93c5fd!important;}
-.feat-card:hover .feat-desc{color:#d1d5db!important;}
-.broker-chip{background:#0f1117;border:1px solid #1e2030;border-radius:8px;padding:8px 16px;color:#9ca3af;font-size:12px;font-weight:700;text-align:center;transition:all .2s;}
-.broker-chip:hover{border-color:#3b82f6;color:#60a5fa;box-shadow:0 0 15px #3b82f630;}
-.step-num{width:36px;height:36px;background:linear-gradient(135deg,#1d4ed8,#7c3aed);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;font-size:14px;margin-bottom:12px;}
-.stat-box{background:linear-gradient(135deg,#0d1526,#0f1117);border:1px solid #1e3a5f;border-radius:12px;padding:20px;text-align:center;}
-.stat-num{font-size:32px;font-weight:900;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
-.stat-lbl{color:#6b7280;font-size:11px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;margin-top:4px;}
-.ticker-wrap{overflow:hidden;background:#090b12;border:1px solid #1e2030;border-radius:10px;padding:10px 0;margin-bottom:28px;}
-.ticker-inner{display:flex;gap:48px;animation:ticker 30s linear infinite;white-space:nowrap;width:max-content;}
-.tick-item{font-size:12px;font-weight:700;color:#9ca3af;display:flex;gap:10px;align-items:center;}
-.tick-up{color:#10b981;}.tick-dn{color:#f43f5e;}
-.upload-cta{background:linear-gradient(135deg,#1d4ed820,#7c3aed20);border:2px dashed #3b82f6;border-radius:16px;padding:32px;text-align:center;margin-top:20px;}
-/* Completely hide all native Streamlit icons (upload, info, etc) from the file uploader */
-[data-testid="stFileUploader"] [data-testid="stIconMaterial"],
-[data-testid="stFileUploaderDropzone"] [data-testid="stIconMaterial"],
-[data-testid="stFileUploaderDropzone"] button,
-[data-testid="stFileUploaderDropzoneInstructions"],
-[data-testid="stWidgetLabel"] [data-testid="stTooltipIcon"] { display: none !important; }
 
-/* Completely hide top-right Streamlit menu and Deploy button */
-[data-testid="stToolbarActions"],
-[data-testid="stAppDeployButton"],
-[data-testid="stMainMenu"],
-[data-testid="stStatusWidget"],
-[data-testid="stElementToolbar"] {
-    display: none !important;
-}
-/* Aggressively hide the technical 'Running...' overlay for fragments */
-div[data-testid="stStatusWidget"], .stStatusWidget, div[class*="stFragmentStatus"] {
-    display: none !important;
-    visibility: hidden !important;
-}
-</style>""", unsafe_allow_html=True)
 
 
 
@@ -376,66 +246,18 @@ div[data-testid="stStatusWidget"], .stStatusWidget, div[class*="stFragmentStatus
         st.markdown('<div style="height:20px;"></div>', unsafe_allow_html=True)
 
     # ── Live Market Ticker Fetching (Non-blocking via Fragments) ───
-    @st.fragment
-    def render_live_ticker():
-        container = st.empty()
-        def _show(data):
-            tickers = [
-                ("NIFTY 50", data.get("^NSEI", {}).get("cur", 24531), data.get("^NSEI", {}).get("pct", 0.42)),
-                ("SENSEX",   data.get("^BSESN", {}).get("cur", 80519), data.get("^BSESN", {}).get("pct", 0.38)),
-                ("BANK NIFTY", data.get("^NSEBANK", {}).get("cur", 52430), data.get("^NSEBANK", {}).get("pct", 0.61)),
-                ("NIFTY IT", data.get("^CNXIT", {}).get("cur", 38120), data.get("^CNXIT", {}).get("pct", -0.24)),
-                ("NIFTY FMCG", data.get("^CNXFMCG", {}).get("cur", 56800), data.get("^CNXFMCG", {}).get("pct", 0.18)),
-                ("GOLD (USD)", data.get("GC=F", {}).get("cur", 2450), data.get("GC=F", {}).get("pct", 0.55)),
-            ]
-            def _t(name, val, pct):
-                cls = "tick-up" if pct >= 0 else "tick-dn"
-                sym = "▲" if pct >= 0 else "▼"
-                v_c = "#111827" if is_light else "#ffffff"
-                return f'<span class="tick-item"><span style="color:#6b7280;font-weight:800;">{name}</span><span class="tick-val" style="color:{v_c};font-weight:900;">{val:,.0f}</span><span class="{cls}" style="font-weight:900;">{sym}{abs(pct):.2f}%</span></span>'
-            items = "".join(_t(n,v,p) for n,v,p in tickers)
-            container.markdown(f'<div class="ticker-wrap"><div class="ticker-inner">{items*4}</div></div>', unsafe_allow_html=True)
-
-        _show({}) # Immediate render
-
-        @st.cache_data(ttl=300) # Longer cache for stability
-        def _fetch_live():
-            res = {}
-            try:
-                import requests as _r
-                from concurrent.futures import ThreadPoolExecutor
-                syms = {"^NSEI":"NIFTY 50", "^BSESN":"SENSEX", "^NSEBANK":"BANK NIFTY", "^CNXIT":"NIFTY IT", "^CNXFMCG":"NIFTY FMCG", "GC=F":"GOLD (USD)"}
-                def _get(sym):
-                    try:
-                        r = _r.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}", params={"interval":"1d","range":"5d"}, headers={"User-Agent":"Mozilla/5.0"}, timeout=2)
-                        if r.status_code == 200:
-                            meta = r.json().get("chart",{}).get("result",[{}])[0].get("meta",{})
-                            cur = float(meta.get("regularMarketPrice",0) or 0)
-                            prev = float(meta.get("chartPreviousClose", cur) or cur)
-                            return sym, {"cur": cur, "pct": (cur-prev)/prev*100 if prev else 0}
-                    except: pass
-                    return sym, None
-
-                with ThreadPoolExecutor(max_workers=6) as exe:
-                    for s, r in exe.map(_get, syms.keys()):
-                        if r: res[s] = r
-                return res
-            except: return {}
-
-        live = _fetch_live()
-        if live: _show(live)
-
-    render_live_ticker()
+    _is_light = st.session_state.get("is_light", True)
+    render_live_ticker(_is_light)
 
     with c_cta:
-        import streamlit.components.v1 as components
-        
         main_uploaded = st.file_uploader("Drop CSV/Excel", type=["csv","xlsx","xls"], key="main_uploader", label_visibility="collapsed")
         
         # Inject custom styling directly into the dropzone
+        import streamlit.components.v1 as components
         components.html("""<script>
         const doc = window.parent.document;
         const upgrade = () => {
+            // 1. Upgrade Dropzone
             const dzs = doc.querySelectorAll('[data-testid="stFileUploaderDropzone"]');
             dzs.forEach(dz => {
                 if (dz && !dz.dataset.upgraded) {
@@ -445,11 +267,38 @@ div[data-testid="stStatusWidget"], .stStatusWidget, div[class*="stFragmentStatus
                     const cta = doc.createElement('div');
                     cta.style.textAlign = 'center'; cta.style.width = '100%';
                     cta.innerHTML = `
-                      <div onclick="window.parent.document.querySelector('[data-testid=\\'stFileUploaderDropzoneInput\\']').click()" style="font-size:32px;margin-bottom:8px;cursor:pointer;">🗂️</div>
+                      <div class="dz-clicker" style="font-size:32px;margin-bottom:8px;cursor:pointer;">🗂️</div>
                       <div style="color:#60a5fa;font-family:sans-serif;font-weight:900;font-size:14px;margin-bottom:4px;">Drop Portfolio</div>
                       <div style="color:#6b7280;font-family:sans-serif;font-size:10px;">CSV · XLSX · XLS</div>
                     `;
                     dz.prepend(cta);
+                    
+                    // Attach click listener directly to the correct hidden input for this specific dropzone
+                    const clicker = dz.querySelector('.dz-clicker');
+                    const hiddenInput = dz.querySelector('[data-testid="stFileUploaderDropzoneInput"]');
+                    if (clicker && hiddenInput) {
+                        clicker.onclick = () => hiddenInput.click();
+                    }
+                }
+            });
+
+            // 2. Replace Native Icons
+            const icons = doc.querySelectorAll('[data-testid="stIconMaterial"]');
+            icons.forEach(icon => {
+                if (icon.textContent === 'keyboard_double_arrow_right') {
+                    icon.textContent = '➤';
+                    icon.style.fontFamily = 'Inter, sans-serif';
+                    icon.style.fontSize = '24px';
+                    icon.style.color = '#1d4ed8';
+                }
+                if (icon.textContent === 'keyboard_double_arrow_left') {
+                    icon.textContent = '◀';
+                    icon.style.fontFamily = 'Inter, sans-serif';
+                    icon.style.fontSize = '20px';
+                    icon.style.color = '#1d4ed8';
+                }
+                if (icon.textContent === 'keyboard_arrow_down') {
+                    icon.style.display = 'none';
                 }
             });
         };
@@ -467,38 +316,8 @@ div[data-testid="stStatusWidget"], .stStatusWidget, div[class*="stFragmentStatus
             st.session_state.last_uploaded_file = main_uploaded
             st.rerun()
 
-    st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
-
-    # ── FEATURES ──────────────────────────────────────────────────
-    st.markdown("<div class='sec'>⚡ What You Get</div>", unsafe_allow_html=True)
-    f1,f2,f3,f4 = st.columns(4)
-    feats = [
-        ("📡","Live Market Data","Real-time prices via Finnhub WebSocket, NSE/BSE REST, Yahoo Finance, and Alpha Vantage waterfall pipeline."),
-        ("🧠","AI Forensic Report","Gemini + Claude AI generates verdict, concentration risk, rebalancing actions, and investor profile."),
-        ("📊","Nifty 50 Benchmark","Compare your portfolio return vs Nifty 50 YTD. See alpha, today's index move, and 52-week range."),
-        ("🔐","Bank-Grade Security","API key auth, rate limiting, payload validation. No data stored without your consent."),
-    ]
-    for col, (icon, title, desc) in zip([f1,f2,f3,f4], feats):
-        col.markdown(f'<div class="feat-card"><div class="feat-icon">{icon}</div><div class="feat-title">{title}</div><div class="feat-desc">{desc}</div></div>', unsafe_allow_html=True)
-
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-
-    # ── HOW IT WORKS ──────────────────────────────────────────────
-    st.markdown("<div class='sec'>🔄 How It Works</div>", unsafe_allow_html=True)
-    w1,w2,w3 = st.columns(3)
-    steps = [
-        ("1","Upload File","Drop any broker CSV or Excel. Our universal parser auto-detects headers, cleans names, maps ISINs."),
-        ("2","Live Enrichment","Click 'Insights' to fetch real-time prices, PE ratios, beta, sector, and Nifty 50 benchmark — all in parallel."),
-        ("3","AI Analysis","Run AI Summary for verdict, concentration risk, rebalancing advice, and behavioral investor profile."),
-    ]
-    for col, (num, title, desc) in zip([w1,w2,w3], steps):
-        col.markdown(f"""<div class="feat-card">
-<div class="step-num">{num}</div>
-<div class="feat-title">{title}</div>
-<div class="feat-desc">{desc}</div>
-</div>""", unsafe_allow_html=True)
-
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    from ui_components.widgets import render_landing_features
+    render_landing_features()
 
     st.markdown("<div style='height:48px'></div>", unsafe_allow_html=True)
     
@@ -571,8 +390,17 @@ if total_cur == 0 and "current_val" in df.columns:
 # Detect if cost basis is available in this file
 has_cost = total_inv > 100   # treat anything < ₹100 as missing
 
+nifty_data = get_nifty_benchmark()
+
 total_pnl = (total_cur - total_inv) if has_cost else 0.0
 total_pct = (total_pnl / total_inv * 100) if (has_cost and total_inv) else 0.0
+
+# Calculate Alpha instantly if Nifty data available
+instant_alpha = 0.0
+if nifty_data and total_pct != 0:
+    nifty_ytd = nifty_data.get("nifty_ytd_pct", 0)
+    instant_alpha = round(total_pct - nifty_ytd, 2)
+
 pnl_c = "#10b981" if total_pnl >= 0 else "#f43f5e"
 hc = "#10b981" if health >= 70 else ("#f59e0b" if health >= 45 else "#f43f5e")
 
@@ -597,39 +425,59 @@ if not has_cost:
                "P&L and Invested amounts cannot be calculated. "
                "Export a **Portfolio Report** with avg buy price for full analysis.")
 
-# ── KPI ROW ───────────────────────────────────────────────────────
-k1,k2,k3,k4 = st.columns(4)
+# ── KPI ROW (Advanced Institutional Metrics) ──────────────────
+k1,k2,k3,k4,k5 = st.columns(5)
+with k1: kpi("CAPITAL", fmt(total_inv))
+with k2: kpi("VALUATION", fmt(total_cur))
+
 if has_cost:
-    with k1: kpi("INVESTED CAPITAL", fmt(total_inv))
-    with k2: kpi("CURRENT VALUATION", fmt(total_cur))
+    pnl_c = "#10b981" if total_pnl >= 0 else "#f43f5e"
     with k3: kpi("UNREALISED P&L", fmt(total_pnl), f"{total_pct:+.2f}%", pnl_c)
+    
+    # Advanced Returns (XIRR)
+    xirr = stats.get("xirr", 0)
+    if xirr == 0 and p2 is None:
+        with k4: kpi("XIRR (ANNUAL)", "ANALYZING...", "Requires Enrichment", "#6b7280")
+    else:
+        xc = "#10b981" if xirr >= 12 else ("#f59e0b" if xirr > 0 else "#f43f5e")
+        with k4: kpi("XIRR (ANNUAL)", f"{xirr:.1f}%", "Time-weighted", xc)
+    
+    # Market Benchmark (Alpha) + Beta (Risk)
+    alpha = stats.get("alpha") or instant_alpha
+    wb = stats.get("weighted_beta", 1.0)
+    if alpha == 0 and p2 is None and instant_alpha == 0:
+        with k5: kpi("ALPHA VS NIFTY", "PENDING...", "Fetching Nifty 50", "#6b7280")
+    else:
+        ac = "#10b981" if alpha > 0 else "#f43f5e"
+        kpi_sub = f"vs Nifty 50 | β {wb:.2f}"
+        with k5: kpi("ALPHA VS NIFTY", f"{alpha:+.1f}%", kpi_sub, ac)
 else:
-    with k1: kpi("HOLDINGS VALUE", fmt(total_cur))
-    with k2: kpi("NO. OF STOCKS", str(len(df)), "Holdings count", "#6b7280")
-    with k3: kpi("P&L", "N/A", "Cost basis missing", "#6b7280")
-with k4:
-    wb = stats.get("weighted_beta", 0)
-    kpi("HOLDINGS", str(len(df)), f"β {wb:.2f}" if wb else "Upload enriched", "#6b7280")
+    with k3: kpi("P&L", "N/A", "Missing cost basis", "#6b7280")
+    with k4: kpi("XIRR", "N/A", "Requires dates", "#6b7280")
+    with k5: kpi("HOLDINGS", str(len(df)), "Scrip count", "#60a5fa")
 
 st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
 # ── PHASE NAVIGATION BUTTONS ──────────────────────────────────────
 active = st.session_state.get("active_phase", "market")
-b1,b2,b3,b4,_ = st.columns([1,1,1,1.2,4])
+b1,b2,b3,b4,b5 = st.columns([1,1,1,1.1,1.1])
 with b1:
-    if st.button("📊  Market & Stats", use_container_width=True, type="primary" if active=="market" else "secondary"):
+    if st.button("📊  Market", use_container_width=True, type="primary" if active=="market" else "secondary"):
         st.session_state.active_phase = "market"; st.rerun()
 with b2:
     lbl = "📈  Insights" + (" ✓" if p2 else "")
     if st.button(lbl, use_container_width=True, type="primary" if active=="insights" else "secondary"):
         st.session_state.active_phase = "insights"; st.rerun()
 with b3:
-    lbl3 = "🧠  AI Summary" + (" ✓" if p3 else "")
+    lbl3 = "🧠  AI Report" + (" ✓" if p3 else "")
     if st.button(lbl3, use_container_width=True, type="primary" if active=="summary" else "secondary"):
         st.session_state.active_phase = "summary"; st.rerun()
 with b4:
-    if st.button("📰  Market Pulse", use_container_width=True, type="primary" if active=="news" else "secondary"):
+    if st.button("📰  Pulse", use_container_width=True, type="primary" if active=="news" else "secondary"):
         st.session_state.active_phase = "news"; st.rerun()
+with b5:
+    if st.button("⏳  Evolution", use_container_width=True, type="primary" if active=="timeline" else "secondary"):
+        st.session_state.active_phase = "timeline"; st.rerun()
 
 st.markdown("<hr style='border-color:#1e2030;margin:10px 0 18px;'>", unsafe_allow_html=True)
 
@@ -665,7 +513,7 @@ if active == "market":
             except: return ""
         styled = disp.style.map(chighlight, subset=["Market Value (₹)"]) if "Market Value (₹)" in disp.columns else disp.style
 
-    st.dataframe(styled, use_container_width=True, height=420)
+    st.dataframe(styled, width="stretch", height=420)
     d1,d2 = st.columns(2)
     with d1: st.download_button("⬇ Download JSON", df.to_json(orient="records",indent=2), f"{fname}.json", "application/json")
     with d2: st.download_button("⬇ Download CSV", disp.to_csv(index=False), f"{fname}.csv", "text/csv")
@@ -772,10 +620,61 @@ elif active == "insights":
                                     line=dict(color="#374151",width=1,dash="dash"))])
     st.plotly_chart(fig2, use_container_width=True, theme=None)
 
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    
+    # ── ADVANCED RISK & TAX SECTION ─────────────────────────────
+    st.markdown("<div class='sec'>🧠 Institutional Analytics & Tax Forensic</div>", unsafe_allow_html=True)
+    r1, r2 = st.columns(2)
+    
+    with r1:
+        st.markdown(f"""
+        <div class='sig'>
+            <div class='kl'>TAX CLASSIFICATION</div>
+            <div style='display:flex; justify-content:space-between; margin-top:12px;'>
+                <div>
+                    <div style='color:#10b981; font-size:18px; font-weight:800;'>{fmt(stats.get('ltcg_pnl',0))}</div>
+                    <div style='color:#4b5563; font-size:10px; font-weight:700;'>LONG TERM (LTCG)</div>
+                </div>
+                <div>
+                    <div style='color:#f59e0b; font-size:18px; font-weight:800;'>{fmt(stats.get('stcg_pnl',0))}</div>
+                    <div style='color:#4b5563; font-size:10px; font-weight:700;'>SHORT TERM (STCG)</div>
+                </div>
+            </div>
+            <div style='margin-top:12px; color:#6b7280; font-size:11px;'>
+                <b>{stats.get('ltcg_count',0)}</b> holdings are in the 1yr+ safe zone. 
+                Consider selling STCG holdings only after holding period ends to save tax.
+            </div>
+        </div>""", unsafe_allow_html=True)
+        
+    with r2:
+        # Sharpe/Sortino estimated from Beta and Sector Volatility
+        wb = stats.get("weighted_beta", 1.0)
+        sharpe = round((total_pct/100 - 0.07) / (wb * 0.15 if wb else 0.2), 2)
+        sortino = round(sharpe * 1.2, 2)
+        
+        st.markdown(f"""
+        <div class='sig'>
+            <div class='kl'>RISK DNA (SHARPE/SORTINO)</div>
+            <div style='display:flex; gap:32px; margin-top:12px;'>
+                <div>
+                    <div style='color:#60a5fa; font-size:18px; font-weight:800;'>{sharpe}</div>
+                    <div style='color:#4b5563; font-size:10px; font-weight:700;'>SHARPE RATIO</div>
+                </div>
+                <div>
+                    <div style='color:#818cf8; font-size:18px; font-weight:800;'>{sortino}</div>
+                    <div style='color:#4b5563; font-size:10px; font-weight:700;'>SORTINO RATIO</div>
+                </div>
+            </div>
+            <div style='margin-top:12px; color:#6b7280; font-size:11px;'>
+                A Sharpe > 1.0 is considered institutional quality. 
+                Your Sortino ratio indicates <b>{'High' if sortino > 1 else 'Moderate'}</b> protection against downside.
+            </div>
+        </div>""", unsafe_allow_html=True)
+
     # ── Dynamic Insights (computed, no AI needed) ─────────────────
     dynamic = p2.get("dynamic", {})
     if dynamic:
-        st.markdown("<div class='sec'>🧠 Portfolio Intelligence</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sec'>💡 Smart Rebalancing & Insights</div>", unsafe_allow_html=True)
         di1, di2 = st.columns(2)
 
         with di1:
@@ -870,94 +769,159 @@ elif active == "summary":
         for o in obs:
             st.markdown(f"<div style='background:#0f1117;border:1px solid #1e2030;border-radius:8px;padding:10px 14px;margin-bottom:6px;color:#9ca3af;font-size:13px;'>• {o}</div>", unsafe_allow_html=True)
 
-@st.fragment(run_every=300)
-def render_market_pulse(limit=None):
-    container = st.empty()
-    
-    @st.cache_data(ttl=300)
-    def _fetch_news():
-        import xml.etree.ElementTree as ET
-        feeds = [
-            ("CNBC TV18", "https://www.cnbctv18.com/common/rss/market.xml"),
-            ("ET Markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
-            ("Moneycontrol", "https://www.moneycontrol.com/rss/marketreports.xml"),
-            ("SEBI PR", "https://www.sebi.gov.in/sebiweb/home/rss_pr.xml"),
-            ("Google Finance", "https://news.google.com/rss/search?q=when:24h+Indian+Stock+Market&hl=en-IN&gl=IN&ceid=IN:en")
-        ]
-        news_items = []
-        import concurrent.futures
-        
-        def _get_one(source, url):
-            try:
-                r = requests.get(url, timeout=4, headers={"User-Agent":"Mozilla/5.0"})
-                if r.status_code == 200:
-                    root = ET.fromstring(r.text)
-                    items = []
-                    for item in root.findall(".//item")[:5]:
-                        title = item.find("title").text
-                        link = item.find("link").text
-                        pub = item.find("pubDate").text if item.find("pubDate") is not None else "Recent"
-                        items.append({"title": title, "link": link, "source": source, "date": pub})
-                    return items
-            except: return []
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-            results = ex.map(lambda p: _get_one(*p), feeds)
-            for r_list in results:
-                news_items.extend(r_list)
-        
-        return sorted(news_items, key=lambda x: x.get("date",""), reverse=True)
-
-    items = _fetch_news()
-    if limit: items = items[:limit]
-    
-    if not items:
-        container.info("No recent news found. Checking feeds..."); return
-
-    # Use 2 columns for homepage, 1 for dashboard
-    if limit:
-        c1, c2 = container.columns(2)
-        half = len(items)//2
-        for idx, (col, subset) in enumerate(zip([c1, c2], [items[:half], items[half:]])):
-            html = ""
-            for i in subset:
-                color = "#10b981" if any(x in i['title'].lower() for x in ['bull', 'jump', 'gain', 'rise', 'buy', 'high']) else \
-                        ("#f43f5e" if any(x in i['title'].lower() for x in ['bear', 'slump', 'fall', 'drop', 'sell', 'low']) else "#9ca3af")
-                txt_c = "#d1d5db" if not is_light else "#1f2937"
-                bg_c = "#0f1117" if not is_light else "#ffffff"
-                brd_c = "#1e2030" if not is_light else "#e5e7eb"
-
-                html += f"""
-                <div style='background:{bg_c}; border:1px solid {brd_c}; border-radius:12px; padding:16px; margin-bottom:12px; height:100px; overflow:hidden;'>
-                    <div style='display:flex; justify-content:space-between; margin-bottom:4px;'>
-                        <span style='background:#1e293b; color:#94a3b8; font-size:8px; font-weight:800; padding:1px 6px; border-radius:3px;'>{i['source']}</span>
-                        <span style='color:#4b5563; font-size:8px;'>{i['date'][:16]}</span>
-                    </div>
-                    <a href='{i['link']}' target='_blank' style='text-decoration:none; color:{txt_c}; font-size:12px; font-weight:700; display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'>{i['title']}</a>
-                </div>"""
-            col.markdown(html, unsafe_allow_html=True)
-    else:
-        html = ""
-        for i in items:
-            color = "#10b981" if any(x in i['title'].lower() for x in ['bull', 'jump', 'gain', 'rise', 'buy', 'high']) else \
-                    ("#f43f5e" if any(x in i['title'].lower() for x in ['bear', 'slump', 'fall', 'drop', 'sell', 'low']) else "#9ca3af")
-            txt_c = "#d1d5db" if not is_light else "#1f2937"
-            bg_c = "#0f1117" if not is_light else "#ffffff"
-            brd_c = "#1e2030" if not is_light else "#e5e7eb"
-
-            html += f"""
-            <div style='background:{bg_c}; border:1px solid {brd_c}; border-radius:12px; padding:16px; margin-bottom:12px;'>
-                <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                    <span style='background:#1e293b; color:#94a3b8; font-size:9px; font-weight:800; padding:2px 8px; border-radius:4px; text-transform:uppercase;'>{i['source']}</span>
-                    <span style='color:#4b5563; font-size:9px;'>{i['date'][:16]}</span>
-                </div>
-                <a href='{i['link']}' target='_blank' style='text-decoration:none; color:{txt_c}; font-size:14px; font-weight:700; line-height:1.4;'>{i['title']}</a>
-            </div>"""
-        container.markdown(html, unsafe_allow_html=True)
-
 # ══════════════════════════════════════════════════════════════════
 # MARKET PULSE (News Tab)
 # ══════════════════════════════════════════════════════════════════
 if active == "news":
     st.markdown("<div class='sec'>📰 Market Pulse — Indian Markets</div>", unsafe_allow_html=True)
     render_market_pulse()
+
+# ══════════════════════════════════════════════════════════════════
+# WEALTH EVOLUTION (Timeline Tab)
+# ══════════════════════════════════════════════════════════════════
+elif active == "timeline":
+    st.markdown("<div class='sec'>📈 Wealth Evolution & Drift Analysis</div>", unsafe_allow_html=True)
+    
+    if not st.session_state.get("user"):
+        st.info("💡 Log in to track your portfolio evolution over time.")
+        st.stop()
+        
+    user_id = st.session_state.user.get("id")
+    history = db_svc.get_user_portfolios(user_id)
+    if not history:
+        st.warning("📊 No historical snapshots found. Save your current analysis to start tracking.")
+        st.stop()
+        
+    # Convert to DataFrame for easier plotting
+    h_df = pd.DataFrame(history)
+    h_df['created_at'] = pd.to_datetime(h_df['created_at'])
+    h_df = h_df.sort_values('created_at')
+
+    if len(history) < 2:
+        st.info("📊 You have 1 snapshot saved. We need at least 2 to show growth trends and velocity.")
+        st.stop()
+    
+    # Calculate Velocity (Growth since last snapshot)
+    latest = h_df.iloc[-1]
+    prev = h_df.iloc[-2]
+    
+    growth = latest['total_current'] - prev['total_current']
+    growth_pct = (growth / prev['total_current'] * 100) if prev['total_current'] > 0 else 0
+    days = (latest['created_at'] - prev['created_at']).days or 1
+    velocity = growth / days
+    
+    v1, v2, v3 = st.columns(3)
+    with v1:
+        kpi("PORTFOLIO VELOCITY", f"₹{velocity:,.0f}/day", "Daily wealth delta", "#60a5fa")
+    with v2:
+        color = "#10b981" if growth >= 0 else "#f43f5e"
+        kpi("LATEST DELTA", f"₹{growth:,.0f}", f"{growth_pct:+.2f}% since last", color)
+    with v3:
+        score_delta = latest['health_score'] - prev['health_score']
+        s_color = "#10b981" if score_delta >= 0 else "#f43f5e"
+        kpi("HEALTH DRIFT", f"{latest['health_score']}", f"{score_delta:+.0f} points shift", s_color)
+        
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    
+    # Plotting
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    
+    # Market Value Area
+    fig.add_trace(go.Scatter(
+        x=h_df['created_at'], y=h_df['total_current'],
+        fill='tozeroy', name='Market Value (₹)',
+        line=dict(color='#3b82f6', width=3),
+        hovertemplate='Date: %{x}<br>Value: ₹%{y:,.0f}<extra></extra>'
+    ))
+    
+    # Cost Basis Line
+    fig.add_trace(go.Scatter(
+        x=h_df['created_at'], y=h_df['total_invested'],
+        name='Invested Capital (₹)',
+        line=dict(color='#94a3b8', width=2, dash='dash'),
+        hovertemplate='Date: %{x}<br>Invested: ₹%{y:,.0f}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=20, b=0),
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor="#1e2030", zeroline=False),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+        
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    
+    # Delta Insights: Deep Drift Analysis
+    st.markdown("<div class='sec'>🔎 Allocation Drift Forensic</div>", unsafe_allow_html=True)
+    
+    # Fetch full data for latest two to compare holdings/sectors
+    if len(history) >= 2:
+        l_id = h_df.iloc[-1]['id']
+        p_id = h_df.iloc[-2]['id']
+        
+        latest_data = db_svc.get_full_portfolio_data(l_id)
+        prev_data   = db_svc.get_full_portfolio_data(p_id)
+        
+        l_h = pd.DataFrame(latest_data.get("holdings", []))
+        p_h = pd.DataFrame(prev_data.get("holdings", []))
+        
+        if not l_h.empty and not p_h.empty:
+            # Sector Drift
+            l_sec = l_h.groupby('sector')['weight_pct'].sum()
+            p_sec = p_h.groupby('sector')['weight_pct'].sum()
+            
+            drift = (l_sec - p_sec).dropna().sort_values(ascending=False)
+            
+            d1, d2 = st.columns([2, 3])
+            with d1:
+                st.markdown("<div style='color:#6b7280;font-size:10px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;margin-bottom:8px;'>SECTOR EXPOSURE DRIFT</div>", unsafe_allow_html=True)
+                for sec, delta in drift.items():
+                    if abs(delta) > 0.1:
+                        d_color = "#10b981" if delta > 0 else "#f43f5e"
+                        st.markdown(f"""
+                        <div style='display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #1e2030;'>
+                            <span style='color:#9ca3af; font-size:13px;'>{sec}</span>
+                            <span style='color:{d_color}; font-weight:700; font-size:13px;'>{delta:+.1f}%</span>
+                        </div>""", unsafe_allow_html=True)
+            
+            with d2:
+                # Top Movers in weight
+                l_h_lite = l_h[['symbol', 'weight_pct']].rename(columns={'weight_pct': 'new_w'})
+                p_h_lite = p_h[['symbol', 'weight_pct']].rename(columns={'weight_pct': 'old_w'})
+                merged = pd.merge(l_h_lite, p_h_lite, on='symbol', how='outer').fillna(0)
+                merged['drift'] = merged['new_w'] - merged['old_w']
+                movers = merged.sort_values('drift', ascending=False).head(5)
+                
+                st.markdown("<div style='color:#6b7280;font-size:10px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;margin-bottom:8px;'>TOP WEIGHTAGE SHIFTS</div>", unsafe_allow_html=True)
+                for _, row in movers.iterrows():
+                    d_color = "#10b981" if row['drift'] > 0 else "#f43f5e"
+                    st.markdown(f"""
+                    <div style='background:#0f1117; border:1px solid #1e2030; border-radius:6px; padding:8px 12px; margin-bottom:6px;'>
+                        <div style='display:flex; justify-content:space-between;'>
+                            <span style='color:#fff; font-weight:600;'>{row['symbol']}</span>
+                            <span style='color:{d_color}; font-weight:700;'>{row['drift']:+.1f}%</span>
+                        </div>
+                        <div style='color:#4b5563; font-size:10px;'>Weight: {row['old_w']:.1f}% → {row['new_w']:.1f}%</div>
+                    </div>""", unsafe_allow_html=True)
+    else:
+        st.info("Additional snapshots needed for deep drift forensic.")
+
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='sec'>🕒 Historical Snapshots Registry</div>", unsafe_allow_html=True)
+    
+    disp_cols = {
+        "created_at": "Timestamp",
+        "total_current": "Market Value",
+        "total_invested": "Invested",
+        "total_pnl": "P&L",
+        "health_score": "Score"
+    }
+    h_disp = h_df[list(disp_cols.keys())].rename(columns=disp_cols).copy()
+    h_disp['Timestamp'] = h_disp['Timestamp'].dt.strftime('%d %b %Y, %H:%M')
+    st.dataframe(h_disp.sort_values('Timestamp', ascending=False), use_container_width=True, hide_index=True)

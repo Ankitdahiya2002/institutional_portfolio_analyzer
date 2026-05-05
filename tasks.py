@@ -90,7 +90,7 @@ def run_parse(file_content_b64: str, filename: str) -> dict:
 # PHASE 2 — ENRICH + ANALYTICS
 # ═══════════════════════════════════════════════════════════════════
 
-def run_enrich_analytics(parsed_data: dict) -> dict:
+def run_enrich_analytics(parsed_data: dict, user_id: str = None) -> dict:
     """Enrich portfolio with live data + calculate metrics."""
     from services.market_data import MarketDataService
     from services.database import SupabaseService
@@ -162,24 +162,36 @@ def run_enrich_analytics(parsed_data: dict) -> dict:
                 ticker=str(row.get('_ticker_hint', '')),
             )
 
-    # ── 5. Metrics + Dynamic Insights + Benchmark ─────────────────
+    # ── 5. Metrics + Performance + Tax + Benchmark ────────────────
     from core.metrics import (calculate_portfolio_metrics,
                               analyze_portfolio_health,
-                              generate_dynamic_insights)
+                              generate_dynamic_insights,
+                              classify_taxes)
     from services.market_data import fetch_nifty50
     from concurrent.futures import ThreadPoolExecutor as _TPE
 
     # Run metrics + Nifty50 fetch in parallel
-    with _TPE(max_workers=2) as ex:
+    with _TPE(max_workers=3) as ex:
         fut_stats   = ex.submit(calculate_portfolio_metrics, df)
         fut_nifty   = ex.submit(fetch_nifty50)
+        fut_tax     = ex.submit(classify_taxes, df)
+        
         stats       = fut_stats.result()
         benchmark   = fut_nifty.result()
+        tax_info    = fut_tax.result()
 
-    health          = analyze_portfolio_health(stats)
-    stats["health"] = health
+    # Try Advanced Performance (XIRR) - Fail gracefully if scipy is missing
+    try:
+        from core.performance import calculate_xirr
+        stats["xirr"] = calculate_xirr(df)
+    except Exception as e:
+        print(f"[Phase2] XIRR engine missing: {e}")
+        stats["xirr"] = 0.0
 
-    # Compute alpha = portfolio return - Nifty YTD return
+    # Ensure taxes are always added
+    stats.update(tax_info)
+
+    # Benchmark + Alpha
     if benchmark:
         pnl_pct  = stats.get("total_pnl_pct", 0)
         alpha    = round(pnl_pct - benchmark.get("nifty_ytd_pct", 0), 2)
@@ -189,7 +201,9 @@ def run_enrich_analytics(parsed_data: dict) -> dict:
         stats["nifty_change_pct"]       = benchmark.get("nifty_change_pct", 0)
         stats["nifty_ytd_pct"]          = benchmark.get("nifty_ytd_pct", 0)
         stats["alpha"]                  = alpha
-        print(f"[Benchmark] Portfolio {pnl_pct:+.2f}% vs Nifty {benchmark.get('nifty_ytd_pct', 0):+.2f}% → Alpha {alpha:+.2f}%")
+
+    health          = analyze_portfolio_health(stats)
+    stats["health"] = health
 
     # Dynamic insights
     dynamic = generate_dynamic_insights(df, stats)
@@ -197,7 +211,7 @@ def run_enrich_analytics(parsed_data: dict) -> dict:
     # ── 6. Save everything to Supabase ────────────────────────────
     try:
         p_name = f"Portfolio_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
-        res    = db.save_portfolio(p_name, stats, health, benchmark=benchmark)
+        res    = db.save_portfolio(p_name, stats, health, benchmark=benchmark, user_id=user_id)
         if res and "id" in res:
             p_id = res["id"]
             db.save_holdings(p_id, df.to_dict(orient="records"))
@@ -221,7 +235,7 @@ def run_enrich_analytics(parsed_data: dict) -> dict:
 # PHASE 3 — AI REPORT
 # ═══════════════════════════════════════════════════════════════════
 
-def run_ai_report(analytics_data: dict) -> dict:
+def run_ai_report(analytics_data: dict, user_id: str = None) -> dict:
     """Generate AI forensic report + save to Supabase."""
     from services.ai_analyzer import AIAnalyzerService
     from services.database import SupabaseService
@@ -256,17 +270,20 @@ def run_ai_report(analytics_data: dict) -> dict:
     except Exception as e:
         print(f"[Phase3] AI failed — using dynamic insights only: {e}")
 
-    # Save to Supabase
+    # Save AI report only (link to existing if possible)
     try:
-        db = SupabaseService(url=os.getenv("SUPABASE_URL"), key=os.getenv("SUPABASE_KEY"))
+        db = SupabaseService()
         if db.is_configured():
-            p_name = f"Portfolio_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
-            res    = db.save_portfolio(p_name, stats, health)
-            if res and "id" in res:
-                p_id = res["id"]
-                db.save_holdings(p_id, analytics_data["data"])
+            # If we just saved in Phase 2, try to use that ID if passed in analytics_data
+            p_id = analytics_data.get("portfolio_id")
+            if not p_id:
+                p_name = f"Portfolio_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
+                res    = db.save_portfolio(p_name, stats, health, user_id=user_id)
+                p_id   = res["id"] if res else None
+            
+            if p_id:
                 db.save_ai_report(p_id, report, "Gemini/Claude")
-                print(f"[Phase3] Saved to Supabase: {p_name} (ID: {p_id})")
+                print(f"[Phase3] Saved report for ID: {p_id}")
     except Exception as e:
         print(f"[Phase3] Supabase save failed: {e}")
 

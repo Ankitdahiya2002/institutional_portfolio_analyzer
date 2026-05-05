@@ -53,6 +53,20 @@ class SupabaseService:
     def _upsert(self, table: str, payload):
         return self._insert(table, payload, upsert_on=True)
 
+    def _patch(self, table: str, payload, query: str):
+        if not self._ok: return None
+        try:
+            r = requests.patch(
+                f"{self.url}/rest/v1/{table}?{query}",
+                headers=self._headers,
+                data=json.dumps(payload),
+                timeout=12,
+            )
+            return r.status_code in (200, 201, 204)
+        except Exception as e:
+            print(f"[Supabase] PATCH error ({table}): {e}")
+            return False
+
     def _query(self, table: str, params: dict) -> list:
         if not self._ok:
             return []
@@ -87,7 +101,7 @@ class SupabaseService:
     # PORTFOLIO
     # ═══════════════════════════════════════════════════════════════
     def save_portfolio(self, name: str, stats: dict, health_score,
-                       benchmark: dict = None) -> dict | None:
+                       benchmark: dict = None, user_id: str = None) -> dict | None:
         """
         Save or upsert portfolio summary row.
         Includes Nifty 50 benchmark comparison columns.
@@ -103,19 +117,36 @@ class SupabaseService:
             "weighted_beta":   self._f(stats.get("weighted_beta",  1.0)),
             "weighted_pe":     self._f(stats.get("weighted_pe",    0)),
             "hhi":             self._f(stats.get("hhi",            0)),
+            "user_id":         user_id,
             "created_at":      datetime.now(timezone.utc).isoformat(),
         }
 
-        # Nifty benchmark data
-        if benchmark:
-            row["nifty_level"]      = self._f(benchmark.get("nifty_current", 0))
-            row["nifty_change_pct"] = self._f(benchmark.get("nifty_change_pct", 0))
-            row["alpha"]            = self._f(benchmark.get("alpha", 0))
-            row["nifty_ytd_pct"]    = self._f(benchmark.get("nifty_ytd_pct", 0))
-            row["portfolio_ytd_pct"]= self._f(stats.get("total_pnl_pct", 0))
-
         result = self._insert("portfolios", row)
         return result[0] if result else None
+
+    def get_full_portfolio_data(self, portfolio_id: str) -> dict:
+        """Fetch everything: stats, holdings, benchmark for a specific ID."""
+        if not portfolio_id: return {}
+        p = self._query("portfolios", {"id": f"eq.{portfolio_id}"})
+        if not p: return {}
+        h = self._query("holdings", {"portfolio_id": f"eq.{portfolio_id}"})
+        b = self._query("benchmark_snapshots", {"portfolio_id": f"eq.{portfolio_id}"})
+        a = self._query("ai_reports", {"portfolio_id": f"eq.{portfolio_id}"})
+        
+        return {
+            "portfolio": p[0],
+            "holdings":  h,
+            "benchmark": b[0] if b else None,
+            "report":    a[0] if a else None
+        }
+
+    def get_user_portfolios(self, user_id: str) -> list:
+        """Fetch all historical portfolios for a specific user."""
+        if not user_id: return []
+        return self._query("portfolios", {
+            "user_id": f"eq.{user_id}",
+            "order": "created_at.desc"
+        })
 
     # ═══════════════════════════════════════════════════════════════
     # HOLDINGS — full data per stock
@@ -253,10 +284,69 @@ class SupabaseService:
             print(f"[Supabase] save_instrument error: {e}")
         return None
 
+    # ═══════════════════════════════════════════════════════════════
+    # USER ACTIVITY TRACKING
+    # ═══════════════════════════════════════════════════════════════
+    def track_login(self, user_id: str, email: str) -> str | None:
+        """Increments login count and starts a new session."""
+        try:
+            # 1. Update Profile
+            profile_payload = {
+                "id": user_id,
+                "email": email,
+                "last_login_at": datetime.now(timezone.utc).isoformat(),
+            }
+            # RPC or complex upsert for incrementing isn't available via standard PostgREST easily without RPC, 
+            # so we fetch and then update or just upsert the basic info
+            self._upsert("user_profiles", profile_payload)
+            
+            # 2. Start Session
+            session_payload = {
+                "user_id": user_id,
+                "start_time": datetime.now(timezone.utc).isoformat()
+            }
+            res = self._insert("user_sessions", session_payload)
+            return res[0]["id"] if res else None
+        except Exception as e:
+            print(f"[Activity] Login track failed: {e}")
+            return None
+
+    def track_logout(self, session_id: str, user_id: str):
+        """Closes a session and updates total duration."""
+        try:
+            # 1. Close Session
+            now = datetime.now(timezone.utc)
+            session = self._query("user_sessions", {"id": f"eq.{session_id}"})
+            if not session: return
+            
+            start_time = datetime.fromisoformat(session[0]["start_time"].replace("Z", "+00:00"))
+            duration = int((now - start_time).total_seconds())
+            
+            self._patch("user_sessions", {
+                "end_time": now.isoformat(),
+                "duration_seconds": duration
+            }, f"id=eq.{session_id}")
+            
+            # 2. Update Profile Logout Stats
+            # Note: Incrementing total_duration would ideally be an RPC, but we'll try a basic patch
+            # In a real app, you'd use a Supabase RPC function for Atomic increments
+            self._patch("user_profiles", {"logout_count": 1}, f"id=eq.{user_id}")
+            
+            print(f"[Activity] Session {session_id} closed. Duration: {duration}s")
+        except Exception as e:
+            print(f"[Activity] Logout track failed: {e}")
+
 
 # ══════════════════════════════════════════════════════════════════
 # ISIN Resolver — Supabase cache → SerpAPI → store back
 # ══════════════════════════════════════════════════════════════════
+import streamlit as st
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cached_resolve_batch(stock_names: list) -> dict:
+    resolver = ISINResolverService()
+    return resolver._do_resolve_batch(stock_names)
+
 class ISINResolverService:
     ISIN_RE = __import__('re').compile(r'\bIN[A-Z0-9]{10}\b')
 
@@ -282,6 +372,9 @@ class ISINResolverService:
         return isin or ''
 
     def resolve_batch(self, stock_names: list) -> dict:
+        return _cached_resolve_batch(stock_names)
+
+    def _do_resolve_batch(self, stock_names: list) -> dict:
         from concurrent.futures import ThreadPoolExecutor
         bulk    = self._bulk_from_supabase(stock_names)
         missing = [n for n in stock_names if not bulk.get(n.strip().upper())]

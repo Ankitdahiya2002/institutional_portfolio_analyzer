@@ -421,3 +421,29 @@ def generate_dynamic_insights(df: pd.DataFrame, stats: dict) -> dict:
         "behavioral_signature": sig,
         "simple_summary":       simple_summary,
     }
+
+def classify_taxes(df):
+    """
+    Classifies holdings into STCG and LTCG.
+    Equity: > 1 year = LTCG
+    """
+    from datetime import datetime
+    if 'buy_date' not in df.columns or df.empty:
+        return {"ltcg_pnl": 0, "stcg_pnl": 0, "ltcg_count": 0, "stcg_count": 0}
+    
+    df = df.copy()
+    df['buy_date'] = pd.to_datetime(df['buy_date'], errors='coerce')
+    today = pd.to_datetime(datetime.now())
+    
+    # Default to 365 days for Equity
+    df['is_long_term'] = (today - df['buy_date']).dt.days > 365
+    
+    ltcg = df[df['is_long_term']]['pnl'].sum() if 'pnl' in df.columns else 0
+    stcg = df[~df['is_long_term']]['pnl'].sum() if 'pnl' in df.columns else 0
+    
+    return {
+        "ltcg_pnl": float(ltcg),
+        "stcg_pnl": float(stcg),
+        "ltcg_count": int(df['is_long_term'].sum()),
+        "stcg_count": int((~df['is_long_term']).sum())
+    }

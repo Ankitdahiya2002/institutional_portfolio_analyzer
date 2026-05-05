@@ -70,50 +70,52 @@ class FinnhubWS:
     """
     WS_URL = "wss://ws.finnhub.io"
 
-    def __init__(self, api_key: str):
-        self.api_key     = api_key
+    def __init__(self, key_provider):
+        self.key_provider = key_provider
         self._ws         = None
         self._connected  = False
         self._subscribed = set()
-        if api_key:
-            threading.Thread(target=self._run, daemon=True).start()
+        threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
+        current_key = self.key_provider()
+        if not current_key: return
+
         try:
             import websocket
-        except ImportError:
-            print("[FinnhubWS] websocket-client not installed. Run: pip install websocket-client")
-            return
+            def on_message(ws, msg):
+                data = json.loads(msg)
+                if data.get("type") == "trade":
+                    for trade in data.get("data", []):
+                        sym = trade.get("s", "")
+                        px  = trade.get("p", 0)
+                        if sym and px:
+                            _cache.set(f"ws:{sym}", {"price": float(px), "source": "FinnhubWS"}, ttl=30)
 
-        def on_message(ws, msg):
-            data = json.loads(msg)
-            if data.get("type") == "trade":
-                for trade in data.get("data", []):
-                    sym = trade.get("s", "")
-                    px  = trade.get("p", 0)
-                    if sym and px:
-                        _cache.set(f"ws:{sym}", {"price": float(px), "source": "FinnhubWS"}, ttl=30)
+            def on_open(ws):
+                self._connected = True
+                print("[FinnhubWS] Connected")
 
-        def on_open(ws):
-            self._connected = True
-            print("[FinnhubWS] Connected")
+            def on_error(ws, err):
+                global _key_idx
+                if "401" in str(err):
+                    _key_idx += 1 # Rotate on auth error
+                self._connected = False
 
-        def on_error(ws, err):
-            self._connected = False
-            print(f"[FinnhubWS] Error: {err}")
+            def on_close(ws, *_):
+                self._connected = False
+                time.sleep(15)
+                self._run() # Retry with fresh key
 
-        def on_close(ws, *_):
-            self._connected = False
-            print("[FinnhubWS] Disconnected — retrying in 15s")
+            self._ws = websocket.WebSocketApp(
+                f"{self.WS_URL}?token={current_key}",
+                on_message=on_message, on_error=on_error,
+                on_open=on_open, on_close=on_close
+            )
+            self._ws.run_forever()
+        except Exception:
             time.sleep(15)
             self._run()
-
-        self._ws = websocket.WebSocketApp(
-            f"{self.WS_URL}?token={self.api_key}",
-            on_open=on_open, on_message=on_message,
-            on_error=on_error, on_close=on_close,
-        )
-        self._ws.run_forever()
 
     def subscribe(self, symbols: list[str]):
         """Subscribe to a list of ticker symbols."""
@@ -129,8 +131,18 @@ class FinnhubWS:
         return cached["price"] if cached else None
 
 
-_FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
-_finnhub_ws  = FinnhubWS(_FINNHUB_KEY)
+_FINNHUB_KEYS = [
+    "d6gq57pr01qg85gvlda0",
+    "d6gq57pr01qg85gvldag",
+    "d7rhcapr01qgahvdl2sg",
+    "d7rhcapr01qgahvdl2t0"
+]
+_key_idx = 0
+
+def _get_fh_key():
+    return _FINNHUB_KEYS[_key_idx % len(_FINNHUB_KEYS)]
+
+_finnhub_ws = FinnhubWS(_get_fh_key)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -167,7 +179,7 @@ def fetch_nse(symbol: str) -> dict | None:
         import requests
         s   = _get_nse_session()
         url = f"https://www.nseindia.com/api/quote-equity?symbol={clean}"
-        r   = s.get(url, headers=_NSE_HEADERS, timeout=5)
+        r   = s.get(url, headers=_NSE_HEADERS, timeout=10)
         if r.status_code == 200:
             d   = r.json()
             pd_ = d.get("priceInfo", {})
@@ -202,24 +214,27 @@ def fetch_bse(isin: str) -> dict | None:
     try:
         import requests
         url = f"https://api.bseindia.com/BseIndiaAPI/api/ComHeader/w?quotetype=EQ&scripcode=&isinno={isin}"
-        r   = requests.get(url, timeout=5,
+        r   = requests.get(url, timeout=10,
                            headers={"User-Agent": "Mozilla/5.0",
                                     "Referer": "https://www.bseindia.com"})
-        if r.status_code == 200:
-            d   = r.json()
-            ltp = float(d.get("CurrRate", 0) or 0)
-            if ltp > 0:
-                result = {
-                    "price":   ltp,
-                    "pct_chg": float(d.get("Chg_percent", 0) or 0),
-                    "sector":  d.get("INDUSTRY", "Unknown"),
-                    "pe":      float(d.get("PE", 0) or 0),
-                    "source":  "BSE",
-                }
-                _cache.set(cache_key, result, ttl=60)
-                return result
-    except Exception as e:
-        print(f"[BSE] {isin}: {e}")
+        if r.status_code == 200 and r.text.strip():
+            try:
+                d   = r.json()
+                ltp = float(d.get("CurrRate", 0) or 0)
+                if ltp > 0:
+                    result = {
+                        "price":   ltp,
+                        "pct_chg": float(d.get("Chg_percent", 0) or 0),
+                        "sector":  d.get("INDUSTRY", "Unknown"),
+                        "pe":      float(d.get("PE", 0) or 0),
+                        "source":  "BSE",
+                    }
+                    _cache.set(cache_key, result, ttl=60)
+                    return result
+            except:
+                return None
+    except Exception:
+        pass
     return None
 
 
@@ -240,7 +255,9 @@ def fetch_yahoo(symbol: str) -> dict | None:
                 headers={"User-Agent": "Mozilla/5.0"}, timeout=5,
             )
             if r.status_code == 200:
-                meta = r.json()["chart"]["result"][0]["meta"]
+                res_data = r.json()
+                if not res_data.get("chart", {}).get("result"): continue
+                meta = res_data["chart"]["result"][0]["meta"]
                 ltp  = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
                 if ltp > 0:
                     result = {
@@ -251,11 +268,38 @@ def fetch_yahoo(symbol: str) -> dict | None:
                         "sector":   "Unknown",
                         "source":   "Yahoo",
                     }
+                    # Try to get sector from quoteSummary if Unknown
+                    meta_res = fetch_yahoo_metadata(symbol)
+                    if meta_res.get("sector") != "Unknown":
+                        result["sector"] = meta_res["sector"]
+                    
                     _cache.set(cache_key, result, ttl=120)
                     return result
     except Exception as e:
         print(f"[Yahoo] {symbol}: {e}")
     return None
+
+def fetch_yahoo_metadata(symbol: str) -> dict:
+    """Fetch sector and industry from Yahoo Finance quoteSummary."""
+    cache_key = f"yf_meta:{symbol}"
+    cached = _cache.get(cache_key)
+    if cached: return cached
+    try:
+        import requests
+        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=assetProfile"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        if r.status_code == 200:
+            res_data = r.json()
+            profile = res_data.get("quoteSummary", {}).get("result", [{}])[0].get("assetProfile", {})
+            res = {
+                "sector": profile.get("sector", profile.get("industry", "Unknown")),
+                "industry": profile.get("industry", "Unknown")
+            }
+            if res["sector"] != "Unknown":
+                _cache.set(cache_key, res, ttl=86400)
+            return res
+    except: pass
+    return {"sector": "Unknown", "industry": "Unknown"}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -335,37 +379,46 @@ def fetch_av_indicators(symbol: str) -> dict:
 # TIER 5 — FINNHUB REST  (final fallback)
 # ═══════════════════════════════════════════════════════════════════
 def fetch_finnhub(symbol: str) -> dict | None:
-    if not _FINNHUB_KEY:
+    if not _FINNHUB_KEYS:
         return None
     cache_key = f"fh:{symbol}"
     cached = _cache.get(cache_key)
     if cached:
         return cached
-    try:
-        import requests
-        r = requests.get(
-            "https://finnhub.io/api/v1/quote",
-            params={"symbol": symbol, "token": _FINNHUB_KEY},
-            timeout=5,
-        )
-        if r.status_code == 200:
-            d   = r.json()
-            ltp = float(d.get("c", 0) or 0)
-            if ltp > 0:
-                result = {
-                    "price":   ltp,
-                    "open":    float(d.get("o", 0)),
-                    "high":    float(d.get("h", 0)),
-                    "low":     float(d.get("l", 0)),
-                    "pct_chg": float(d.get("dp", 0)),
-                    "source":  "Finnhub",
-                    "pe":      0.0, "beta": 1.0, "mkt_cap": 0.0, "sector": "Unknown",
-                }
-                _cache.set(cache_key, result, ttl=60)
-                return result
-    except Exception as e:
-        print(f"[Finnhub] {symbol}: {e}")
-    return None
+    def _do_fetch(sym, retry=True):
+        try:
+            import requests
+            r = requests.get(
+                "https://finnhub.io/api/v1/quote",
+                params={"symbol": sym, "token": _get_fh_key()},
+                timeout=5,
+            )
+            if r.status_code == 429 and retry:
+                global _key_idx
+                _key_idx += 1 # Rotate
+                return _do_fetch(sym, retry=False) # Instant retry with new key
+            
+            if r.status_code == 200:
+                d   = r.json()
+                ltp = float(d.get("c", 0) or 0)
+                if ltp > 0:
+                    return {
+                        "price":   ltp,
+                        "open":    float(d.get("o", 0)),
+                        "high":    float(d.get("h", 0)),
+                        "low":     float(d.get("l", 0)),
+                        "pct_chg": float(d.get("dp", 0)),
+                        "source":  "Finnhub",
+                        "pe":      0.0, "beta": 1.0, "mkt_cap": 0.0, "sector": "Unknown",
+                    }
+        except Exception:
+            pass
+        return None
+
+    result = _do_fetch(symbol)
+    if result:
+        _cache.set(cache_key, result, ttl=60)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -395,9 +448,13 @@ def _candidates(stock_name: str, isin: str = "") -> list[str]:
     ov  = NSE_OVERRIDES.get(first)
     if ov:
         out += [ov, ov.replace(".NS", ".BO")]
-    out += [f"{first2}.NS", f"{first2}.BO",
-            f"{first}.NS",  f"{first}.BO",
-            re.sub(r'[^A-Z0-9]', '', name)[:15] + ".NS"]
+    
+    # Avoid generic one-word names that are rarely the actual ticker (e.g. TATA, STATE)
+    if len(first) > 4 or ov:
+        out += [f"{first2}.NS", f"{first2}.BO",
+                f"{first}.NS",  f"{first}.BO"]
+    
+    out += [re.sub(r'[^A-Z0-9]', '', name)[:15] + ".NS"]
 
     seen, unique = set(), []
     for c in out:
@@ -409,6 +466,9 @@ def _candidates(stock_name: str, isin: str = "") -> list[str]:
 # ═══════════════════════════════════════════════════════════════════
 # WATERFALL FETCH — tries all tiers in order
 # ═══════════════════════════════════════════════════════════════════
+import streamlit as st
+
+@st.cache_data(ttl=180, show_spinner=False)
 def fetch_market_data(stock_name: str, isin: str = "",
                       ticker_hint: str = "") -> dict | None:
     """
@@ -478,26 +538,44 @@ def fetch_market_data(stock_name: str, isin: str = "",
 # ═══════════════════════════════════════════════════════════════════
 # SCREENER.IN — sector fallback for Indian stocks
 # ═══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_screener_sector(stock_name: str) -> str:
+    """Scrape sector info from Screener.in with fallback candidates."""
+    if not stock_name or len(stock_name) < 2: return "Unknown"
     cache_key = f"sec:{stock_name}"
     cached = _cache.get(cache_key)
-    if cached:
-        return cached
-    try:
-        import requests
-        from bs4 import BeautifulSoup
-        query = re.sub(r'\s+', '-', stock_name.strip().lower())
-        r = requests.get(f"https://www.screener.in/company/{query}/",
-                         headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            el   = soup.find("a", {"href": re.compile(r"/screens/")})
-            if el:
-                sector = el.text.strip()
-                _cache.set(cache_key, sector, ttl=86400)
-                return sector
-    except Exception:
-        pass
+    if cached: return cached
+
+    import requests
+    from bs4 import BeautifulSoup
+    
+    # Try different URL slugs
+    clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', stock_name).strip()
+    candidates = [
+        re.sub(r'\s+', '-', clean_name.lower()), # slug-style
+        clean_name.split()[0].upper(),           # first word (often ticker)
+        re.sub(r'\s+', '', clean_name).upper(),  # packed name
+    ]
+    
+    # Remove duplicates
+    seen = set()
+    unique_candidates = [x for x in candidates if not (x in seen or seen.add(x))]
+
+    for query in unique_candidates:
+        try:
+            url = f"https://www.screener.in/company/{query}/"
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, "html.parser")
+                # Look for the sector link (usually a link containing /screens/)
+                el = soup.find("a", {"href": re.compile(r"/screens/")})
+                if el:
+                    sector = el.text.strip()
+                    _cache.set(cache_key, sector, ttl=86400)
+                    return sector
+        except Exception:
+            continue
+            
     return "Unknown"
 
 
@@ -507,6 +585,7 @@ def fetch_screener_sector(stock_name: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 # NIFTY 50 REAL-TIME BENCHMARK
 # ═══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_nifty50() -> dict:
     """
     Fetch real-time Nifty 50 data from Yahoo Finance (^NSEI).
@@ -633,17 +712,32 @@ class MarketDataService:
                     if str(df.at[idx, "sector"]).strip() in ("", "Unknown"):
                         df.at[idx, "sector"] = data.get("sector", "Unknown")
 
-        # Sector gap-fill via Screener.in
-        unknown_mask = df["sector"].isin(["Unknown", "", None])
+        # Sector gap-fill via Screener.in and Yahoo Metadata
+        unknown_mask = df["sector"].isin(["Unknown", "", None, "UNKNOWN"])
         if unknown_mask.any():
-            with ThreadPoolExecutor(max_workers=6) as ex:
-                def _sec(args):
-                    return args[0], fetch_screener_sector(args[1])
-                for idx, sector in ex.map(
-                    _sec, [(i, df.at[i, "stock_name"]) for i in df.index[unknown_mask]]
-                ):
-                    if sector != "Unknown":
-                        df.at[idx, "sector"] = sector
+            with ThreadPoolExecutor(max_workers=10) as ex:
+                def _sec_resolver(idx):
+                    name = df.at[idx, "stock_name"]
+                    hint = df.at[idx, "_ticker_hint"]
+                    
+                    # 1. Try Yahoo Metadata if we have a hint
+                    if hint:
+                        y_meta = fetch_yahoo_metadata(hint)
+                        if y_meta["sector"] != "Unknown":
+                            return idx, y_meta["sector"]
+                    
+                    # 2. Try Screener fallback
+                    s_sector = fetch_screener_sector(name)
+                    if s_sector != "Unknown":
+                        return idx, s_sector
+                    
+                    return idx, "Unknown"
+
+                futures = [ex.submit(_sec_resolver, i) for i in df.index[unknown_mask]]
+                for fut in as_completed(futures):
+                    idx, resolved_sector = fut.result()
+                    if resolved_sector != "Unknown":
+                        df.at[idx, "sector"] = resolved_sector
 
         # Recalculate P&L with live prices
         ltp = df["ltp"].astype(float)
