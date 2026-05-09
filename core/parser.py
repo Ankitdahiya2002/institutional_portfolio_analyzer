@@ -293,6 +293,11 @@ COLUMN_MAP = {
     # date (for XIRR and Tax logic)
     'date': 'buy_date', 'buydate': 'buy_date', 'purchasedate': 'buy_date',
     'allocationdate': 'buy_date', 'holdingperiod': 'buy_date',
+    'transactiondate': 'buy_date', 'tradedate': 'buy_date',
+    'firstpurchasedate': 'buy_date', 'acquisitiondate': 'buy_date',
+    'holdingsince': 'buy_date', 'holdingdate': 'buy_date',
+    'investmentdate': 'buy_date', 'dateofinvestment': 'buy_date',
+    'dateofpurchase': 'buy_date', 'purchaseon': 'buy_date',
 }
 
 def _norm_col(col):

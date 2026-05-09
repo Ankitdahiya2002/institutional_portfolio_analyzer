@@ -435,12 +435,16 @@ if has_cost:
     with k3: kpi("UNREALISED P&L", fmt(total_pnl), f"{total_pct:+.2f}%", pnl_c)
     
     # Advanced Returns (XIRR)
-    xirr = stats.get("xirr", 0)
-    if xirr == 0 and p2 is None:
+    xirr = stats.get("xirr")
+    if xirr in (0, None) and p2 is None:
         with k4: kpi("XIRR (ANNUAL)", "ANALYZING...", "Requires Enrichment", "#6b7280")
+    elif xirr is None:
+        with k4: kpi("XIRR (ANNUAL)", "N/A", "Insufficient data", "#6b7280")
     else:
         xc = "#10b981" if xirr >= 12 else ("#f59e0b" if xirr > 0 else "#f43f5e")
-        with k4: kpi("XIRR (ANNUAL)", f"{xirr:.1f}%", "Time-weighted", xc)
+        est_label = "~1yr est. (no dates)" if stats.get("xirr_estimated") else "Time-weighted"
+        est_star = "*" if stats.get("xirr_estimated") else ""
+        with k4: kpi(f"XIRR (ANNUAL){est_star}", f"{xirr:.1f}%", est_label, xc)
     
     # Market Benchmark (Alpha) + Beta (Risk)
     alpha = stats.get("alpha") or instant_alpha
@@ -627,9 +631,13 @@ elif active == "insights":
     r1, r2 = st.columns(2)
     
     with r1:
+        tax_est = stats.get('estimated', False)
+        est_star = "*" if tax_est else ""
+        est_disclaimer = " (Assumed holding >1yr due to missing dates)*" if tax_est else ""
+        
         st.markdown(f"""
         <div class='sig'>
-            <div class='kl'>TAX CLASSIFICATION</div>
+            <div class='kl'>TAX CLASSIFICATION{est_star}</div>
             <div style='display:flex; justify-content:space-between; margin-top:12px;'>
                 <div>
                     <div style='color:#10b981; font-size:18px; font-weight:800;'>{fmt(stats.get('ltcg_pnl',0))}</div>
@@ -643,6 +651,7 @@ elif active == "insights":
             <div style='margin-top:12px; color:#6b7280; font-size:11px;'>
                 <b>{stats.get('ltcg_count',0)}</b> holdings are in the 1yr+ safe zone. 
                 Consider selling STCG holdings only after holding period ends to save tax.
+                <br><span style="color:#ef4444; font-size:10px;">{est_disclaimer}</span>
             </div>
         </div>""", unsafe_allow_html=True)
         

@@ -180,13 +180,29 @@ def run_enrich_analytics(parsed_data: dict, user_id: str = None) -> dict:
         benchmark   = fut_nifty.result()
         tax_info    = fut_tax.result()
 
-    # Try Advanced Performance (XIRR) - Fail gracefully if scipy is missing
+    # Try Advanced Performance (XIRR + Sharpe/Sortino)
     try:
-        from core.performance import calculate_xirr
-        stats["xirr"] = calculate_xirr(df)
+        from core.performance import calculate_xirr, calculate_risk_metrics
+        xirr_result = calculate_xirr(df)
+        if isinstance(xirr_result, dict):
+            stats["xirr"]           = xirr_result["value"]
+            stats["xirr_estimated"] = xirr_result["estimated"]
+        else:
+            stats["xirr"]           = xirr_result  # None → no data at all
+            stats["xirr_estimated"] = False
+
+        # Sharpe / Sortino from per-stock pnl_pct as a returns series
+        if "pnl_pct" in df.columns:
+            returns = df["pnl_pct"].dropna().astype(float) / 100
+            risk = calculate_risk_metrics(returns)
+            stats["sharpe"]  = risk.get("sharpe", 0.0)
+            stats["sortino"] = risk.get("sortino", 0.0)
     except Exception as e:
-        print(f"[Phase2] XIRR engine missing: {e}")
-        stats["xirr"] = 0.0
+        print(f"[Phase2] Performance metrics error: {e}")
+        stats.setdefault("xirr", None)
+        stats.setdefault("xirr_estimated", False)
+        stats.setdefault("sharpe", 0.0)
+        stats.setdefault("sortino", 0.0)
 
     # Ensure taxes are always added
     stats.update(tax_info)

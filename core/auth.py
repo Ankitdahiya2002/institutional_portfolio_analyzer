@@ -20,12 +20,24 @@ class SupabaseAuth:
     def sign_up(self, email, password):
         if not self._ok: return {"error": "Database not configured. Check .env"}
         try:
+            # redirect_to must match an allowed URL in Supabase Auth → URL Configuration
+            redirect_url = os.getenv("APP_URL", "http://localhost:8502")
             r = requests.post(
                 f"{self.url}/auth/v1/signup",
                 headers=self._headers,
-                json={"email": email, "password": password}
+                json={
+                    "email": email,
+                    "password": password,
+                    "options": {"emailRedirectTo": redirect_url}
+                }
             )
-            return r.json() if r.status_code == 200 else {"error": r.json().get("msg", "Signup failed")}
+            data = r.json()
+            if r.status_code == 200:
+                # If email confirmation is disabled, user object comes back immediately
+                if data.get("user") and data["user"].get("confirmed_at"):
+                    return {"user": data["user"], "confirmed": True}
+                return {"pending": True, "message": "Check your inbox and click the confirmation link."}
+            return {"error": data.get("msg", data.get("error_description", "Signup failed"))}
         except Exception as e:
             return {"error": str(e)}
 

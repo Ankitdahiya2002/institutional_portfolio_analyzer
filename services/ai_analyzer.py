@@ -93,49 +93,6 @@ class AIAnalyzerService:
                 last_error = f"Claude: {str(e)[:120]}"
                 print(f"[AI] {last_error}")
 
-        # ── 2. Gemini — try every key × every model in order ─────
-        if self.gemini_key:
-            import google.generativeai as genai
-            import os
-            # Collect all available Gemini keys — skip obvious placeholders
-            _PLACEHOLDER_PATTERNS = ('api_key', 'your_key', 'xxx', 'placeholder', '...')
-            def _is_real_key(k):
-                if not k: return False
-                kl = k.strip().lower()
-                return not any(p in kl for p in _PLACEHOLDER_PATTERNS)
-
-            gemini_keys = [k for k in [
-                os.getenv("GEMINI_API_KEY_1"),
-                os.getenv("GEMINI_API_KEY_2"),
-                self.gemini_key,
-            ] if _is_real_key(k)]
-            # Only use currently active models (1.5-* and preview builds are deprecated on v1beta)
-            gemini_models = [
-                "gemini-2.5-flash",
-                "gemini-2.0-flash",
-                "gemini-2.0-flash-lite",
-            ]
-            for model_name in gemini_models:
-                for key in gemini_keys:
-                    try:
-                        genai.configure(api_key=key)
-                        model = genai.GenerativeModel(model_name)
-                        response = model.generate_content(
-                            prompt,
-                            generation_config={"max_output_tokens": max_tokens},
-                            request_options={"timeout": 30}
-                        )
-                        if response and response.text:
-                            print(f"[AI] Success with {model_name} (key ...{key[-6:]})")
-                            return response.text.strip()
-                    except Exception as e:
-                        err = str(e)
-                        print(f"[AI] {model_name} (key ...{key[-6:]}) failed: {err[:80]}")
-                        # On quota/rate errors try the next key; otherwise skip model
-                        if any(x in err.lower() for x in ["quota", "rate", "429", "resource"]):
-                            continue
-                        break  # non-quota error — skip remaining keys for this model
-
         or_key = __import__('os').getenv('OPENROUTER_API_KEY')
         if or_key:
             try:

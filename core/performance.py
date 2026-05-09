@@ -10,33 +10,50 @@ def xnpv(rate, cashflows):
 def calculate_xirr(df):
     """
     Calculates the XIRR of the portfolio.
-    Requires 'buy_date', 'invested_val', and 'current_val'.
+    Requires 'invested_val' and 'current_val'.
+    If 'buy_date' is absent, estimates using a default 1-year holding period.
+    Returns a dict: {"value": float, "estimated": bool} or None on hard failure.
     """
-    if 'buy_date' not in df.columns or df.empty:
-        return 0.0
-    
+    if df.empty:
+        return None
+
     try:
-        # 1. Prepare cash flows
-        # Investment is negative outflow
+        df = df.copy()
+        estimated = False
+
+        if 'buy_date' not in df.columns or df['buy_date'].isna().all():
+            # No date info — assume 1-year holding period as a conservative estimate
+            df['buy_date'] = pd.Timestamp.now() - pd.DateOffset(years=1)
+            estimated = True
+        else:
+            df['buy_date'] = pd.to_datetime(df['buy_date'], errors='coerce')
+            # Fill rows where date is NaT with 1-year-ago
+            df['buy_date'] = df['buy_date'].fillna(pd.Timestamp.now() - pd.DateOffset(years=1))
+            if df['buy_date'].isna().all():
+                estimated = True
+
         cashflows = []
         df_valid = df[df['invested_val'].astype(float) > 0]
         if not df_valid.empty:
-            dates = pd.to_datetime(df_valid['buy_date'])
-            vals = -df_valid['invested_val'].astype(float)
+            dates = df_valid['buy_date']
+            vals  = -df_valid['invested_val'].astype(float)
             cashflows.extend(list(zip(dates, vals)))
-        
-        # Current value is positive inflow (if we sold today)
-        total_current = df['current_val'].sum()
-        if total_current > 0:
-            cashflows.append((pd.to_datetime(datetime.now()), float(total_current)))
-            
-        if not cashflows or len(cashflows) < 2:
-            return 0.0
 
-        # 2. Solve for rate
-        return newton(lambda r: xnpv(r, cashflows), 0.1) * 100
-    except:
-        return 0.0
+        total_current = float(df['current_val'].sum())
+        if total_current > 0:
+            cashflows.append((pd.Timestamp.now(), total_current))
+
+        if not cashflows or len(cashflows) < 2:
+            return None
+
+        # Sort by date (required for XNPV)
+        cashflows.sort(key=lambda x: x[0])
+
+        xirr_val = round(newton(lambda r: xnpv(r, cashflows), 0.1) * 100, 2)
+        return {"value": xirr_val, "estimated": estimated}
+    except Exception as e:
+        print(f"[XIRR] Solver failed: {e}")
+        return None
 
 def calculate_risk_metrics(returns_series, risk_free_rate=0.07):
     """
@@ -62,27 +79,3 @@ def calculate_risk_metrics(returns_series, risk_free_rate=0.07):
         "sortino": round(float(sortino * np.sqrt(252)), 2)
     }
 
-def classify_taxes(df):
-    """
-    Classifies holdings into STCG and LTCG.
-    Equity: > 1 year = LTCG
-    """
-    if 'buy_date' not in df.columns or df.empty:
-        return {"ltcg_val": 0, "stcg_val": 0}
-    
-    df = df.copy()
-    df['buy_date'] = pd.to_datetime(df['buy_date'], errors='coerce')
-    today = pd.to_datetime(datetime.now())
-    
-    # Default to 365 days for Equity
-    df['is_long_term'] = (today - df['buy_date']).dt.days > 365
-    
-    ltcg = df[df['is_long_term']]['pnl'].sum() if 'pnl' in df.columns else 0
-    stcg = df[~df['is_long_term']]['pnl'].sum() if 'pnl' in df.columns else 0
-    
-    return {
-        "ltcg_pnl": float(ltcg),
-        "stcg_pnl": float(stcg),
-        "ltcg_count": int(df['is_long_term'].sum()),
-        "stcg_count": int((~df['is_long_term']).sum())
-    }
