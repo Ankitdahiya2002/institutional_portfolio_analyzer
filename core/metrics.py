@@ -424,26 +424,53 @@ def generate_dynamic_insights(df: pd.DataFrame, stats: dict) -> dict:
 
 def classify_taxes(df):
     """
-    Classifies holdings into STCG and LTCG.
-    Equity: > 1 year = LTCG
+    Classifies holdings into STCG and LTCG based on holding period.
+    Equity: > 1 year = LTCG, <= 1 year = STCG.
+
+    If buy_date is missing, assumes all holdings are LTCG (conservative default).
+    Returns estimated=True in that case so the UI can show a disclaimer.
     """
     from datetime import datetime
-    if 'buy_date' not in df.columns or df.empty:
-        return {"ltcg_pnl": 0, "stcg_pnl": 0, "ltcg_count": 0, "stcg_count": 0}
-    
+    if df.empty:
+        return {"ltcg_pnl": 0.0, "stcg_pnl": 0.0, "ltcg_count": 0, "stcg_count": 0, "estimated": False}
+
     df = df.copy()
+    
+    # Safely compute PnL if not explicitly present
+    if 'pnl' in df.columns:
+        df['computed_pnl'] = df['pnl'].astype(float)
+    elif 'current_val' in df.columns and 'invested_val' in df.columns:
+        df['computed_pnl'] = df['current_val'].astype(float) - df['invested_val'].astype(float)
+    else:
+        df['computed_pnl'] = 0.0
+
+    total_pnl = float(df['computed_pnl'].sum())
+
+    # ── No buy_date column → assume all holdings are LTCG ─────────────
+    if 'buy_date' not in df.columns or df['buy_date'].isna().all():
+        return {
+            "ltcg_pnl":   round(total_pnl, 2),
+            "stcg_pnl":   0.0,
+            "ltcg_count": len(df),
+            "stcg_count": 0,
+            "estimated":  True,   # no dates — assumed LTCG
+        }
+
+    # ── Date available → proper classification ─────────────────────────
     df['buy_date'] = pd.to_datetime(df['buy_date'], errors='coerce')
     today = pd.to_datetime(datetime.now())
-    
-    # Default to 365 days for Equity
-    df['is_long_term'] = (today - df['buy_date']).dt.days > 365
-    
-    ltcg = df[df['is_long_term']]['pnl'].sum() if 'pnl' in df.columns else 0
-    stcg = df[~df['is_long_term']]['pnl'].sum() if 'pnl' in df.columns else 0
-    
+
+    # For rows with missing dates, default to LTCG (conservative)
+    df['is_long_term'] = (today - df['buy_date']).dt.days.fillna(366) > 365
+
+    ltcg = float(df[df['is_long_term']]['computed_pnl'].sum())
+    stcg = float(df[~df['is_long_term']]['computed_pnl'].sum())
+    has_missing = df['buy_date'].isna().any()
+
     return {
-        "ltcg_pnl": float(ltcg),
-        "stcg_pnl": float(stcg),
+        "ltcg_pnl":   round(ltcg, 2),
+        "stcg_pnl":   round(stcg, 2),
         "ltcg_count": int(df['is_long_term'].sum()),
-        "stcg_count": int((~df['is_long_term']).sum())
+        "stcg_count": int((~df['is_long_term']).sum()),
+        "estimated":  has_missing,
     }
