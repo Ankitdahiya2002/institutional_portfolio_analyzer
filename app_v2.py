@@ -234,7 +234,7 @@ if not uploaded:
     # ── HERO ──────────────────────────────────────────────────────
     c_hero, c_cta = st.columns([1.6, 1])
     with c_hero:
-        st.markdown(f'<div class="hero-title">Universal <br>Analyzer</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hero-title">Aegis <br>FinAI</div>', unsafe_allow_html=True)
         st.markdown('<div class="hero-sub">Institutional-grade forensic analysis for any portfolio format. Instantly resolve risk, performance, and sector health without the Excel complexity.</div>', unsafe_allow_html=True)
         
         c1, c2, c3 = st.columns(3)
