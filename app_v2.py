@@ -195,7 +195,7 @@ with st.sidebar:
             border-color: #fca5a5 !important;
         }
         
-        /* Make the top left UNIVERSAL ANALYZER dark */
+        /* Make the top left AegisFin AI dark */
         [data-testid="stSidebar"] div {
             color: #1f2937;
         }
