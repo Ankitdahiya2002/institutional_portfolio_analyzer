@@ -59,4 +59,4 @@ bash run_all.sh
 Proprietary. All rights reserved.
 
 ## 
-Connect via dahiyaankit38@fmail.com
+Connect via dahiyaankit38@gmail.com
